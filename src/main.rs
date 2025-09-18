@@ -1,15 +1,16 @@
 use bevy::prelude::*;
+use bevy::scene::SceneInstanceReady;
 use bevy::{image, scene};
 use bevy_mod_imgui::prelude::*;
 use bevy_rapier3d::prelude::*;
 use std::fs::{self, DirEntry};
 use std::path::Path;
 mod camera;
+mod ik;
 mod thumbnail;
 
 use bevy_rapier3d::prelude::*;
 use imgui;
-use rapier_testbed3d::ui::egui::debug_text::print;
 
 #[derive(Resource)]
 struct ImguiState {
@@ -53,7 +54,7 @@ fn main() {
         .add_systems(Update, draw_cursor.after(calc_cursor_pos))
         .add_systems(Update, spawn_asset.after(calc_cursor_pos))
         .add_systems(Update, alive_entities_ui)
-        .add_systems(PostUpdate, sync_ragdoll_to_skeleton)
+        .add_systems(Update, ik_system)
         .add_systems(
             Update,
             camera::pan_orbit_camera.run_if(any_with_component::<camera::PanOrbitState>),
@@ -90,7 +91,6 @@ fn setup(
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(material_handle),
         Ground,
-        Collider::cuboid(100.0, 0.1, 100.0),
     ));
     commands.spawn((
         DirectionalLight::default(),
@@ -204,17 +204,14 @@ fn imgui_ui(
         ui.show_demo_window(&mut state.demo_window_open);
     }
 }
-fn alive_entities_ui(
-    mut context: NonSendMut<ImguiContext>,
-    mut query: Query<(Entity, &GameAsset), With<Alive>>,
-) {
+fn alive_entities_ui(mut context: NonSendMut<ImguiContext>, query: Query<Entity, With<Alive>>) {
     let ui = context.ui();
     let window = ui.window("Alive entities");
     window
         .position([1000., 1000.0], imgui::Condition::FirstUseEver)
         .size([300.0, 300.0], imgui::Condition::FirstUseEver)
         .build(|| {
-            for (e, game_asset) in query.iter_mut() {
+            for e in query.iter() {
                 ui.text(format!("Alive Entities: {}", e));
             }
         });
@@ -271,29 +268,28 @@ fn spawn_asset(
         if game_asset.selected {
             let scene_handle = asset_server
                 .load(GltfAssetLabel::Scene(0).from_asset(game_asset.model_path.clone()));
-            commands.spawn((
-                SceneRoot(scene_handle),
-                Transform::from_xyz(
-                    cursor.cursor_position.x,
-                    cursor.cursor_position.y,
-                    cursor.cursor_position.z,
-                ),
-            ));
-            commands.entity(e).insert(Alive);
-
-            commands.spawn((
+            let world_asset = commands
+                .spawn((
+                    SceneRoot(scene_handle),
+                    Transform::from_xyz(
+                        cursor.cursor_position.x,
+                        cursor.cursor_position.y - 0.5,
+                        cursor.cursor_position.z,
+                    ),
+                ))
+                .id();
+            commands.entity(world_asset).insert((
                 RigidBody::Fixed,
-                Collider::cuboid(1.0, 1.0, 1.0), // Usa un collider semplice per ora
+                Collider::cuboid(0.25, 0.25, 0.25),
                 Transform::from_xyz(
                     cursor.cursor_position.x,
-                    cursor.cursor_position.y + 1.,
+                    cursor.cursor_position.y + 0.5,
                     cursor.cursor_position.z,
                 ),
+                Alive,
             ));
-            println!("spawning asset");
-            println!("{:?} {:?}", e, game_asset.model_path);
             break;
-        }
+        };
     }
 }
 
@@ -394,109 +390,231 @@ fn walk_subdirs(commands: &mut Commands, dir: &Path) {
     }
 }
 
+/// Componenti per identificare il personaggio
 #[derive(Component)]
-pub struct Character;
+struct Character;
 
-fn spawn_character(mut commands: Commands, asset_server: Res<AssetServer>) {
-    println!("spawning character");
-    commands
-        .spawn((
-            SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("man.glb"))),
-            Transform::from_xyz(1.0, 2.0, 1.0),
-            Character,
-            AssetName("Character Man".to_string()),
-        ))
-        .observe(setup_character_skeleton);
+/// Rappresenta una catena IK (es. braccio, gamba)
+#[derive(Component)]
+struct IKChain {
+    bones: Vec<Entity>,        // bones della catena dal root al terminale
+    target: Vec3,              // posizione target finale
+    pole_target: Option<Vec3>, // opzionale: aiuta a evitare torsioni innaturali
+    iterations: usize,         // numero di iterazioni del solver FABRIK
 }
-fn setup_character_skeleton(
-    trigger: Trigger<scene::SceneInstanceReady>,
-    children: Query<&Children>,
-    names: Query<&Name>,
-    transforms: Query<&Transform>,
-    child_of: Query<&ChildOf>,
-    mut commands: Commands,
-) {
-    let root = trigger.target();
 
-    commands.entity(root).insert(RigidBody::Fixed);
-    for descendant in children.iter_descendants(root) {
-        if let Ok(name) = names.get(descendant) {
-            if name.as_str().starts_with("Bone") {
-                println!("spawning bone {}", name);
-                if let Ok(child) = child_of.get(descendant) {
-                    let parent_entity = child.parent();
+/// Sistema IK che aggiorna i bones ogni frame
+fn ik_system(mut chains: Query<&mut IKChain>, mut bones: Query<&mut Transform>) {
+    for mut chain in chains.iter_mut() {
+        if chain.bones.is_empty() {
+            continue;
+        }
 
-                    if let (Ok(parent_transform), Ok(bone_transform)) =
-                        (transforms.get(parent_entity), transforms.get(descendant))
-                    {
-                        let bone_length = bone_transform.translation.length();
-                        println!("bone length: {}", bone_length);
+        let mut positions: Vec<Vec3> = chain
+            .bones
+            .iter()
+            .map(|&b| bones.get_mut(b).unwrap().translation)
+            .collect();
 
-                        if bone_length < 0.001 {
-                            continue; // Skip degenerate bones
-                        }
+        let root_position = positions[0];
+        let target_position = chain.target;
 
-                        // usa la posizione locale del bone rispetto al parent
-                        let bone_local = bone_transform.translation;
-                        let bone_length = bone_local.length();
-                        if bone_length < 0.001 {
-                            continue;
-                        }
+        // Calcolo lunghezze osso
+        let mut bone_lengths = Vec::with_capacity(positions.len() - 1);
+        for i in 0..positions.len() - 1 {
+            bone_lengths.push((positions[i + 1] - positions[i]).length());
+        }
 
-                        // direzione del bone nello spazio locale del parent
-                        let dir = bone_local.normalize();
-                        // punto medio del segmento parent→child
-                        let mid_local = bone_local * 0.5;
-                        // rotazione che allinea l’asse Y alla direzione del bone
-                        let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+        let target_position = chain.target; // copia, non borrow
+        let iterations = chain.iterations; // copia
+        let bone_count = chain.bones.len();
+        for _ in 0..chain.iterations {
+            // Backward pass: posiziona l’ultimo osso sulla target
+            for _ in 0..iterations {
+                positions[bone_count - 1] = target_position;
+                for i in (0..bone_count - 1).rev() {
+                    let dir = (positions[i] - positions[i + 1]).normalize_or_zero();
+                    positions[i] = positions[i + 1] + dir * bone_lengths[i];
+                }
 
-                        // spawn della proxy collider come entità separata
-                        let proxy_entity = commands
-                            .spawn((
-                                RigidBody::Dynamic,
-                                Collider::capsule_y(bone_length * 0.5, 0.02),
-                                Transform {
-                                    translation: mid_local,
-                                    rotation,
-                                    ..Default::default()
-                                },
-                                BoneLink {
-                                    bone_entity: descendant,
-                                },
-                            ))
-                            .id();
-                        commands.entity(proxy_entity).insert(Transform {
-                            translation: Vec3::new(0.0, bone_length * 0.5, 0.0), // sposta il collider lungo Y
-                            ..Default::default()
-                        });
-                        let joint = FixedJointBuilder::new()
-                            .local_anchor1(mid_local)
-                            .local_anchor2(Vec3::Y);
-                        commands
-                            .entity(proxy_entity)
-                            .insert(ImpulseJoint::new(parent_entity, joint));
+                // Forward pass: mantiene root fisso
+                positions[0] = root_position;
+                for i in 0..positions.len() - 1 {
+                    let dir = (positions[i + 1] - positions[i]).normalize_or_zero();
+                    positions[i + 1] = positions[i] + dir * bone_lengths[i];
+                }
+            }
+
+            // Aggiorna i bones con le nuove posizioni e rotazioni
+            for i in 0..positions.len() - 1 {
+                let bone_entity = chain.bones[i];
+                let dir = (positions[i + 1] - positions[i]).normalize_or_zero();
+
+                if let Ok(mut tf) = bones.get_mut(bone_entity) {
+                    tf.translation = positions[i];
+                    if dir.length_squared() > 0.0 {
+                        tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir);
                     }
+                }
+            }
+
+            // Ultimo bone
+            if let Some(&last) = chain.bones.last() {
+                if let Ok(mut tf) = bones.get_mut(last) {
+                    tf.translation = positions[positions.len() - 1];
                 }
             }
         }
     }
 }
-/// Collega un rigid body fisico a un bone della mesh
-#[derive(Component)]
-struct BoneLink {
-    pub bone_entity: Entity, // l'entità `Bone.*` uscita dal GLTF
+/// Estensione utile: normalizza un vettore, ritorna zero se nullo
+trait NormalizeOrZero {
+    fn normalize_or_zero(&self) -> Vec3;
 }
-fn sync_ragdoll_to_skeleton(
-    ragdoll_bodies: Query<(&GlobalTransform, &BoneLink)>,
-    mut bones: Query<&mut Transform>,
+
+impl NormalizeOrZero for Vec3 {
+    fn normalize_or_zero(&self) -> Vec3 {
+        let l = self.length();
+        if l > 0.0 { *self / l } else { Vec3::ZERO }
+    }
+}
+
+fn spawn_character(mut commands: Commands, asset_server: Res<AssetServer>) {
+    println!("spawning character");
+
+    // 1️⃣ Spawn scena GLTF
+    let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset("man.glb"));
+    commands
+        .spawn((
+            SceneRoot(scene_handle.clone()),
+            Transform::from_xyz(10.0, 1.0, 10.0),
+            Character,
+            AssetName("Character Man".to_string()),
+        ))
+        // 2️⃣ Quando la scena è pronta, costruisci root e catene IK
+        .observe(setup_character_skeleton_and_ik);
+}
+
+/// Funzione chiamata quando il GLTF è pronto
+fn setup_character_skeleton_and_ik(
+    trigger: Trigger<scene::SceneInstanceReady>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    transforms: Query<&Transform>,
+    mut commands: Commands,
 ) {
-    for (rb_global, link) in &ragdoll_bodies {
-        if let Ok(mut bone_tf) = bones.get_mut(link.bone_entity) {
-            // Aggiorna solo la posizione del bone
-            bone_tf.translation = rb_global.translation();
-            println!("Bone translation {}", bone_tf.translation);
-            // NON toccare la rotazione
-            // bone_tf.rotation = rb_global.rotation();
+    let root_entity = trigger.target();
+    for descendant in children.iter_descendants(root_entity) {
+        if let Ok(name) = names.get(descendant) {
+            println!("Descendant bone: {}", name.as_str());
         }
+    }
+    let root_bone = children.iter_descendants(root_entity).find(|&e| {
+        names.get(e).map_or(false, |name| {
+            let n = name.as_str().to_lowercase();
+            n.contains("pelvis") || n.contains("root")
+        })
+    });
+
+    let root_bone = match root_bone {
+        Some(b) => b,
+        None => {
+            warn!("Root bone non trovato, abort setup");
+            return;
+        }
+    };
+
+    // 1️⃣ Assegna RigidBody e Collider al root
+    commands
+        .entity(root_bone)
+        .insert(RigidBody::Dynamic)
+        .insert(Collider::ball(0.5))
+        .insert(Restitution::coefficient(0.0))
+        .insert(Alive);
+
+    // Helper per trovare bones per nome parziale
+    let find_bone = |partial: &str| -> Option<Entity> {
+        children.iter_descendants(root_entity).find(|&e| {
+            names.get(e).map_or(false, |name| {
+                //println!("{}", name.as_str());
+                name.as_str()
+                    .to_lowercase()
+                    .contains(&partial.to_lowercase())
+            })
+        })
+    };
+
+    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
+        find_bone("upper_arm_left"),
+        find_bone("forearm_left"),
+        find_bone("hand_left"),
+    ) {
+        println!("Creating left arm");
+        commands.spawn(IKChain {
+            bones: vec![upper_arm, forearm, hand],
+            target: transforms.get(hand).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
+            pole_target: Some(
+                transforms.get(forearm).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
+            ),
+            iterations: 10,
+        });
+    }
+
+    // Braccio destro
+    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
+        find_bone("upper_arm_right"),
+        find_bone("forearm_right"),
+        find_bone("hand_right"),
+    ) {
+        println!("Creating right arm");
+        commands.spawn(IKChain {
+            bones: vec![upper_arm, forearm, hand],
+            target: transforms.get(hand).unwrap().translation + Vec3::new(1.0, 0.0, 0.0),
+            pole_target: Some(
+                transforms.get(forearm).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
+            ),
+            iterations: 10,
+        });
+    }
+
+    // Gamba sinistra
+    if let (Some(hip), Some(knee), Some(foot)) = (
+        find_bone("thigh_left"),
+        find_bone("shin_left"),
+        find_bone("foot_left"),
+    ) {
+        println!("Creating left leg");
+        commands.spawn(IKChain {
+            bones: vec![hip, knee, foot],
+            target: transforms.get(foot).unwrap().translation - Vec3::new(0.0, 0.0, 0.0),
+            pole_target: Some(transforms.get(knee).unwrap().translation + Vec3::new(0.0, 0.0, 0.0)),
+            iterations: 10,
+        });
+    }
+
+    // Gamba destra
+    if let (Some(hip), Some(knee), Some(foot)) = (
+        find_bone("thigh_right"),
+        find_bone("shin_right"),
+        find_bone("foot_right"),
+    ) {
+        println!("Creating right leg");
+        commands.spawn(IKChain {
+            bones: vec![hip, knee, foot],
+            target: transforms.get(foot).unwrap().translation - Vec3::new(0.0, 0.0, 0.0),
+            pole_target: Some(transforms.get(knee).unwrap().translation + Vec3::new(0.0, 0.0, 0.0)),
+            iterations: 10,
+        });
+    }
+
+    // Collo/Head
+    if let (Some(neck), Some(head)) = (find_bone("neck"), find_bone("head")) {
+        println!("Creating neck and head");
+        commands.spawn(IKChain {
+            bones: vec![neck, head],
+            target: transforms.get(head).unwrap().translation + Vec3::new(0.0, 0., 0.0),
+            pole_target: None,
+            iterations: 5,
+        });
     }
 }
