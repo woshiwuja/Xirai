@@ -1,3 +1,51 @@
+/// Blocca la rotazione del collider del pelvis sull'asse Y
+fn lock_pelvis_rotation_system(mut query: Query<(&Name, &mut Transform), With<Collider>>) {
+    for (name, mut transform) in query.iter_mut() {
+        if name.as_str().to_lowercase().contains("pelvis") {
+            // Mantieni la rotazione solo sull'asse Y (upright)
+            let (_, y, _) = transform.rotation.to_euler(EulerRot::YXZ);
+            transform.rotation = Quat::from_rotation_y(y);
+        }
+    }
+}
+fn set_right_hand_target_on_click(
+    buttons: Res<ButtonInput<MouseButton>>,
+    cursor: Res<Cursor>,
+    mut ik_chains: Query<&mut IKChain>,
+    names: Query<&Name>,
+) {
+    if buttons.just_pressed(MouseButton::Left) {
+        for mut chain in ik_chains.iter_mut() {
+            // Find the right arm chain by bone names
+            if chain.bones.len() == 3 {
+                let hand_entity = chain.bones[2];
+                if let Ok(name) = names.get(hand_entity) {
+                    if name.as_str().to_lowercase().contains("hand_right") {
+                        chain.target = cursor.cursor_position;
+                    }
+                }
+            }
+        }
+    }
+}
+/// Set the right hand IK target to the cursor position
+fn set_right_hand_target_to_cursor(
+    cursor: Res<Cursor>,
+    mut ik_chains: Query<&mut IKChain>,
+    names: Query<&Name>,
+) {
+    for mut chain in ik_chains.iter_mut() {
+        // Find the right arm chain by bone names
+        if chain.bones.len() == 3 {
+            let hand_entity = chain.bones[2];
+            if let Ok(name) = names.get(hand_entity) {
+                if name.as_str().to_lowercase().contains("hand_right") {
+                    chain.target = cursor.cursor_position;
+                }
+            }
+        }
+    }
+}
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 use bevy::{image, scene};
@@ -8,10 +56,8 @@ use std::path::Path;
 mod camera;
 mod ik;
 mod thumbnail;
-
 use bevy_rapier3d::prelude::*;
 use imgui;
-
 #[derive(Resource)]
 struct ImguiState {
     demo_window_open: bool,
@@ -55,10 +101,13 @@ fn main() {
         .add_systems(Update, spawn_asset.after(calc_cursor_pos))
         .add_systems(Update, alive_entities_ui)
         .add_systems(Update, ik_system)
+        .add_systems(Update, lock_pelvis_rotation_system)
+        .add_systems(Update, set_right_hand_target_on_click)
         .add_systems(
             Update,
             camera::pan_orbit_camera.run_if(any_with_component::<camera::PanOrbitState>),
         )
+        .add_plugins(RapierPickingPlugin)
         .run();
 }
 
@@ -241,6 +290,7 @@ fn setup_physics(
     /* Create the ground. */
     commands
         .spawn(Collider::cuboid(1000.0, 0.1, 1000.0))
+        .insert(Friction::coefficient(1.0))
         .insert(Transform::from_xyz(0.0, 0.0, 0.0));
 
     /* Create the bouncing ball. */
@@ -264,30 +314,29 @@ fn spawn_asset(
         return;
     }
 
-    for (e, game_asset) in query.iter() {
+    for (_, game_asset) in query.iter() {
         if game_asset.selected {
             let scene_handle = asset_server
                 .load(GltfAssetLabel::Scene(0).from_asset(game_asset.model_path.clone()));
-            let world_asset = commands
+            let asset = commands
                 .spawn((
                     SceneRoot(scene_handle),
                     Transform::from_xyz(
                         cursor.cursor_position.x,
-                        cursor.cursor_position.y - 0.5,
+                        cursor.cursor_position.y,
                         cursor.cursor_position.z,
                     ),
+                    RigidBody::Fixed,
+                    Alive,
                 ))
                 .id();
-            commands.entity(world_asset).insert((
-                RigidBody::Fixed,
-                Collider::cuboid(0.25, 0.25, 0.25),
-                Transform::from_xyz(
-                    cursor.cursor_position.x,
-                    cursor.cursor_position.y + 0.5,
-                    cursor.cursor_position.z,
-                ),
-                Alive,
-            ));
+            // Spawn collider as child, offset by half_height on Y
+            commands.entity(asset).with_children(|parent| {
+                parent.spawn((
+                    Collider::cuboid(0.25, 0.8, 0.25),
+                    Transform::from_xyz(0.0, 0.8, 0.0),
+                ));
+            });
             break;
         };
     }
@@ -425,44 +474,62 @@ fn ik_system(mut chains: Query<&mut IKChain>, mut bones: Query<&mut Transform>) 
             bone_lengths.push((positions[i + 1] - positions[i]).length());
         }
 
-        let target_position = chain.target; // copia, non borrow
-        let iterations = chain.iterations; // copia
+        let iterations = chain.iterations;
         let bone_count = chain.bones.len();
-        for _ in 0..chain.iterations {
+        for _ in 0..iterations {
             // Backward pass: posiziona l’ultimo osso sulla target
-            for _ in 0..iterations {
-                positions[bone_count - 1] = target_position;
-                for i in (0..bone_count - 1).rev() {
-                    let dir = (positions[i] - positions[i + 1]).normalize_or_zero();
-                    positions[i] = positions[i + 1] + dir * bone_lengths[i];
-                }
-
-                // Forward pass: mantiene root fisso
-                positions[0] = root_position;
-                for i in 0..positions.len() - 1 {
-                    let dir = (positions[i + 1] - positions[i]).normalize_or_zero();
-                    positions[i + 1] = positions[i] + dir * bone_lengths[i];
-                }
+            positions[bone_count - 1] = target_position;
+            for i in (0..bone_count - 1).rev() {
+                let dir = (positions[i] - positions[i + 1]).normalize_or_zero();
+                positions[i] = positions[i + 1] + dir * bone_lengths[i];
             }
 
-            // Aggiorna i bones con le nuove posizioni e rotazioni
+            // Forward pass: mantiene root fisso
+            positions[0] = root_position;
             for i in 0..positions.len() - 1 {
-                let bone_entity = chain.bones[i];
                 let dir = (positions[i + 1] - positions[i]).normalize_or_zero();
-
-                if let Ok(mut tf) = bones.get_mut(bone_entity) {
-                    tf.translation = positions[i];
-                    if dir.length_squared() > 0.0 {
-                        tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir);
-                    }
-                }
+                positions[i + 1] = positions[i] + dir * bone_lengths[i];
             }
 
-            // Ultimo bone
-            if let Some(&last) = chain.bones.last() {
-                if let Ok(mut tf) = bones.get_mut(last) {
-                    tf.translation = positions[positions.len() - 1];
+            // Pole vector adjustment (gentle and stable)
+            if let Some(pole) = chain.pole_target {
+                // Only apply if chain has at least 3 bones (e.g., arm/leg)
+                if positions.len() >= 3 {
+                    let a = positions[0];
+                    let b = positions[1];
+                    let c = positions[2];
+                    // Project pole onto plane defined by a-b-c
+                    let ab = (b - a).normalize_or_zero();
+                    let ac = (c - a).normalize_or_zero();
+                    let plane_normal = ab.cross(ac).normalize_or_zero();
+                    let ap = pole - a;
+                    let proj_pole = ap - plane_normal * ap.dot(plane_normal);
+                    let proj_b = b - a - plane_normal * (b - a).dot(plane_normal);
+                    // Calculate direction from current middle joint to projected pole
+                    let bend_dir = (proj_pole - proj_b).normalize_or_zero();
+                    // Move middle joint gently toward projected pole
+                    positions[1] += bend_dir * 0.05; // 0.05 is a gentler factor
                 }
+            }
+        }
+
+        // Aggiorna i bones con le nuove posizioni e rotazioni
+        for i in 0..positions.len() - 1 {
+            let bone_entity = chain.bones[i];
+            let dir = (positions[i + 1] - positions[i]).normalize_or_zero();
+
+            if let Ok(mut tf) = bones.get_mut(bone_entity) {
+                tf.translation = positions[i];
+                if dir.length_squared() > 0.0 {
+                    tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+                }
+            }
+        }
+
+        // Ultimo bone
+        if let Some(&last) = chain.bones.last() {
+            if let Ok(mut tf) = bones.get_mut(last) {
+                tf.translation = positions[positions.len() - 1];
             }
         }
     }
@@ -475,7 +542,11 @@ trait NormalizeOrZero {
 impl NormalizeOrZero for Vec3 {
     fn normalize_or_zero(&self) -> Vec3 {
         let l = self.length();
-        if l > 0.0 { *self / l } else { Vec3::ZERO }
+        if l > 0.0 {
+            *self / l
+        } else {
+            Vec3::ZERO
+        }
     }
 }
 
@@ -487,7 +558,7 @@ fn spawn_character(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands
         .spawn((
             SceneRoot(scene_handle.clone()),
-            Transform::from_xyz(10.0, 1.0, 10.0),
+            Transform::from_xyz(0.0, 5.0, 0.0),
             Character,
             AssetName("Character Man".to_string()),
         ))
@@ -528,15 +599,15 @@ fn setup_character_skeleton_and_ik(
     commands
         .entity(root_bone)
         .insert(RigidBody::Dynamic)
-        .insert(Collider::ball(0.5))
+        .insert(Collider::capsule_y(0.2, 0.12))
         .insert(Restitution::coefficient(0.0))
+        .insert(Friction::coefficient(1.0))
         .insert(Alive);
 
     // Helper per trovare bones per nome parziale
     let find_bone = |partial: &str| -> Option<Entity> {
         children.iter_descendants(root_entity).find(|&e| {
             names.get(e).map_or(false, |name| {
-                //println!("{}", name.as_str());
                 name.as_str()
                     .to_lowercase()
                     .contains(&partial.to_lowercase())
@@ -544,77 +615,178 @@ fn setup_character_skeleton_and_ik(
         })
     };
 
-    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
-        find_bone("upper_arm_left"),
-        find_bone("forearm_left"),
-        find_bone("hand_left"),
-    ) {
-        println!("Creating left arm");
-        commands.spawn(IKChain {
-            bones: vec![upper_arm, forearm, hand],
-            target: transforms.get(hand).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
-            pole_target: Some(
-                transforms.get(forearm).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
-            ),
-            iterations: 10,
+    // Helper per aggiungere collider come child
+    let add_collider_child = |parent: Entity, shape: Collider| {
+        commands.entity(parent).with_children(|p| {
+            p.spawn((shape, Transform::default()));
         });
-    }
+    };
 
-    // Braccio destro
-    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
-        find_bone("upper_arm_right"),
-        find_bone("forearm_right"),
-        find_bone("hand_right"),
-    ) {
-        println!("Creating right arm");
-        commands.spawn(IKChain {
-            bones: vec![upper_arm, forearm, hand],
-            target: transforms.get(hand).unwrap().translation + Vec3::new(1.0, 0.0, 0.0),
-            pole_target: Some(
-                transforms.get(forearm).unwrap().translation + Vec3::new(0.0, 0.0, 0.0),
-            ),
-            iterations: 10,
-        });
-    }
-
+    //    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
+    //        find_bone("upper_arm_left"),
+    //        find_bone("forearm_left"),
+    //        find_bone("hand_left"),
+    //    ) {
+    //        println!("Creating left arm");
+    //        // Bone colliders temporarily disabled
+    //        // commands.entity(upper_arm).with_children(|p| {
+    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+    //        // });
+    //        // commands.entity(forearm).with_children(|p| {
+    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+    //        // });
+    //        // commands.entity(hand).with_children(|p| {
+    //        //     p.spawn((Collider::ball(0.05), Transform::default()));
+    //        // });
+    //        let forearm_pos = transforms.get(forearm).unwrap().translation;
+    //        let pole = forearm_pos + Vec3::new(0.0, 0.0, 0.3);
+    //        let upper_arm_pos = transforms.get(upper_arm).unwrap().translation;
+    //        // T-pose: hand target directly to the left
+    //        let tpose_distance = 0.5; // adjust as needed for your model
+    //        let hand_target = upper_arm_pos + Vec3::new(-tpose_distance, 0.0, 0.0);
+    //        // Add joints: upper_arm -> forearm, forearm -> hand
+    //        commands
+    //            .entity(forearm)
+    //            .insert(ImpulseJoint::new(upper_arm, SphericalJointBuilder::new()));
+    //        commands
+    //            .entity(hand)
+    //            .insert(ImpulseJoint::new(forearm, SphericalJointBuilder::new()));
+    //        commands.spawn(IKChain {
+    //            bones: vec![upper_arm, forearm, hand],
+    //            target: hand_target,
+    //            pole_target: Some(pole),
+    //            iterations: 10,
+    //        });
+    //    }
+    //
+    //    // Braccio destro
+    //    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
+    //        find_bone("upper_arm_right"),
+    //        find_bone("forearm_right"),
+    //        find_bone("hand_right"),
+    //    ) {
+    //        println!("Creating right arm");
+    //        // Bone colliders temporarily disabled
+    //        // commands.entity(upper_arm).with_children(|p| {
+    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+    //        // });
+    //        // commands.entity(forearm).with_children(|p| {
+    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+    //        // });
+    //        // commands.entity(hand).with_children(|p| {
+    //        //     p.spawn((Collider::ball(0.05), Transform::default()));
+    //        // });
+    //        let forearm_pos = transforms.get(forearm).unwrap().translation;
+    //        let pole = forearm_pos + Vec3::new(0.0, 0.0, 0.3);
+    //        let upper_arm_pos = transforms.get(upper_arm).unwrap().translation;
+    //        // T-pose: hand target directly to the right
+    //        let tpose_distance = 0.5; // adjust as needed for your model
+    //        let hand_target = upper_arm_pos + Vec3::new(tpose_distance, 0.0, 0.0);
+    //        commands
+    //            .entity(forearm)
+    //            .insert(ImpulseJoint::new(upper_arm, SphericalJointBuilder::new()));
+    //        commands
+    //            .entity(hand)
+    //            .insert(ImpulseJoint::new(forearm, SphericalJointBuilder::new()));
+    //        commands.spawn(IKChain {
+    //            bones: vec![upper_arm, forearm, hand],
+    //            target: hand_target,
+    //            pole_target: Some(pole),
+    //            iterations: 10,
+    //        });
+    //    }
+    //
     // Gamba sinistra
-    if let (Some(hip), Some(knee), Some(foot)) = (
+    if let (Some(thigh), Some(shin), Some(foot)) = (
         find_bone("thigh_left"),
         find_bone("shin_left"),
         find_bone("foot_left"),
     ) {
         println!("Creating left leg");
+        commands.entity(thigh).with_children(|p| {
+            p.spawn((Collider::capsule_y(0.06, 0.12), Transform::default()));
+        });
+        commands.entity(shin).with_children(|p| {
+            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+        });
+        commands.entity(foot).with_children(|p| {
+            p.spawn((Collider::ball(0.06), Transform::default()));
+        });
+        let root_pos = transforms.get(root_bone).unwrap().translation;
+        let thigh_pos = transforms.get(thigh).unwrap().translation;
+        // Project root position onto ground (Y=0)
+        let foot_target = Vec3::new(root_pos.x - 0.15, 0.0, root_pos.z); // left foot offset from root
+        let pole = thigh_pos + Vec3::new(0.0, 0.0, 0.3);
+        // Add joints: thigh -> shin, shin -> foot
+        commands
+            .entity(shin)
+            .insert(ImpulseJoint::new(thigh, SphericalJointBuilder::new()));
+        commands
+            .entity(foot)
+            .insert(ImpulseJoint::new(shin, SphericalJointBuilder::new()));
         commands.spawn(IKChain {
-            bones: vec![hip, knee, foot],
-            target: transforms.get(foot).unwrap().translation - Vec3::new(0.0, 0.0, 0.0),
-            pole_target: Some(transforms.get(knee).unwrap().translation + Vec3::new(0.0, 0.0, 0.0)),
+            bones: vec![thigh, shin, foot],
+            target: foot_target,
+            pole_target: Some(pole),
             iterations: 10,
         });
     }
 
     // Gamba destra
-    if let (Some(hip), Some(knee), Some(foot)) = (
+    if let (Some(thigh), Some(shin), Some(foot)) = (
         find_bone("thigh_right"),
         find_bone("shin_right"),
         find_bone("foot_right"),
     ) {
         println!("Creating right leg");
+        commands.entity(thigh).with_children(|p| {
+            p.spawn((Collider::capsule_y(0.06, 0.12), Transform::default()));
+        });
+        commands.entity(shin).with_children(|p| {
+            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+        });
+        commands.entity(foot).with_children(|p| {
+            p.spawn((Collider::ball(0.06), Transform::default()));
+        });
+        let root_pos = transforms.get(root_bone).unwrap().translation;
+        let thigh_pos = transforms.get(thigh).unwrap().translation;
+        // Project root position onto ground (Y=0)
+        let foot_target = Vec3::new(root_pos.x + 0.15, 0.0, root_pos.z); // right foot offset from root
+        let pole = thigh_pos + Vec3::new(0.0, 0.0, 0.3);
+        commands
+            .entity(shin)
+            .insert(ImpulseJoint::new(thigh, SphericalJointBuilder::new()));
+        commands
+            .entity(foot)
+            .insert(ImpulseJoint::new(shin, SphericalJointBuilder::new()));
         commands.spawn(IKChain {
-            bones: vec![hip, knee, foot],
-            target: transforms.get(foot).unwrap().translation - Vec3::new(0.0, 0.0, 0.0),
-            pole_target: Some(transforms.get(knee).unwrap().translation + Vec3::new(0.0, 0.0, 0.0)),
+            bones: vec![thigh, shin, foot],
+            target: foot_target,
+            pole_target: Some(pole),
             iterations: 10,
         });
     }
 
     // Collo/Head
-    if let (Some(neck), Some(head)) = (find_bone("neck"), find_bone("head")) {
-        println!("Creating neck and head");
-        commands.spawn(IKChain {
-            bones: vec![neck, head],
-            target: transforms.get(head).unwrap().translation + Vec3::new(0.0, 0., 0.0),
-            pole_target: None,
-            iterations: 5,
-        });
-    }
+    // if let (Some(neck), Some(head)) = (find_bone("neck"), find_bone("head")) {
+    //     println!("Creating neck and head");
+    //     // Find spine or use root as parent for neck joint
+    //     let spine_or_root = find_bone("spine").or(Some(root_bone));
+    //     if let Some(parent_bone) = spine_or_root {
+    //         commands
+    //             .entity(neck)
+    //             .insert(ImpulseJoint::new(parent_bone, SphericalJointBuilder::new()));
+    //     }
+    //     // Optionally add joint from neck to head
+    //     commands
+    //         .entity(head)
+    //         .insert(ImpulseJoint::new(neck, SphericalJointBuilder::new()));
+    //     // IK chain for neck and head
+    //     commands.spawn(IKChain {
+    //         bones: vec![neck, head],
+    //         target: transforms.get(head).unwrap().translation + Vec3::new(0.0, 0.2, 0.0),
+    //         pole_target: None,
+    //         iterations: 10,
+    //     });
+    // }
 }

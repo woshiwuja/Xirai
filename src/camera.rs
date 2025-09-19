@@ -62,7 +62,7 @@ impl Default for PanOrbitState {
 impl Default for PanOrbitSettings {
     fn default() -> Self {
         PanOrbitSettings {
-            pan_sensitivity: 0.001, // 1000 pixels per world unit
+            pan_sensitivity: 0.001,                 // 1000 pixels per world unit
             orbit_sensitivity: 0.1f32.to_radians(), // 0.1 degree per pixel
             zoom_sensitivity: 0.01,
             pan_key: Some(MouseButton::Left),
@@ -93,16 +93,11 @@ pub fn pan_orbit_camera(
     btn: Res<ButtonInput<MouseButton>>,
     mut evr_motion: EventReader<MouseMotion>,
     mut evr_scroll: EventReader<MouseWheel>,
-    mut q_camera: Query<(
-        &PanOrbitSettings,
-        &mut PanOrbitState,
-        &mut Transform,
-    )>,
+    mut q_camera: Query<(&PanOrbitSettings, &mut PanOrbitState, &mut Transform)>,
 ) {
     // First, accumulate the total amount of
     // mouse motion and scroll, from all pending events:
-    let mut total_motion: Vec2 = evr_motion.read()
-        .map(|ev| ev.delta).sum();
+    let mut total_motion: Vec2 = evr_motion.read().map(|ev| ev.delta).sum();
 
     // Reverse Y (Bevy's Worldspace coordinate system is Y-Up,
     // but events are in window/ui coordinates, which are Y-Down)
@@ -124,43 +119,84 @@ pub fn pan_orbit_camera(
     }
 
     for (settings, mut state, mut transform) in &mut q_camera {
+        // WASD movement for orbit center
+        let mut wasd_move = Vec3::ZERO;
+        // Move forward/backward on XZ plane only
+        if kbd.pressed(KeyCode::KeyW) {
+            let fwd = transform.forward().as_vec3();
+            wasd_move += Vec3::new(fwd.x, 0.0, fwd.z);
+        }
+        if kbd.pressed(KeyCode::KeyS) {
+            let fwd = transform.forward().as_vec3();
+            wasd_move -= Vec3::new(fwd.x, 0.0, fwd.z);
+        }
+        if kbd.pressed(KeyCode::KeyA) {
+            wasd_move -= transform.right().as_vec3();
+        }
+        if kbd.pressed(KeyCode::KeyD) {
+            wasd_move += transform.right().as_vec3();
+        }
+        let wasd_delta = if wasd_move != Vec3::ZERO {
+            Some(wasd_move.normalize())
+        } else {
+            None
+        };
+        let radius = state.radius;
         // Check how much of each thing we need to apply.
         // Accumulate values from motion and scroll,
         // based on our configuration settings.
 
         let mut total_pan = Vec2::ZERO;
         if settings.scroll_action == Some(PanOrbitAction::Pan) {
-            total_pan -= total_scroll_lines
-                * settings.scroll_line_sensitivity * settings.pan_sensitivity;
-            total_pan -= total_scroll_pixels
-                * settings.scroll_pixel_sensitivity * settings.pan_sensitivity;
+            total_pan -=
+                total_scroll_lines * settings.scroll_line_sensitivity * settings.pan_sensitivity;
+            total_pan -=
+                total_scroll_pixels * settings.scroll_pixel_sensitivity * settings.pan_sensitivity;
         }
 
         let mut total_orbit = Vec2::ZERO;
-        if settings.orbit_key.map(|mb| btn.pressed(mb)).unwrap_or(false) {
+        let orbiting = settings
+            .orbit_key
+            .map(|mb| btn.pressed(mb))
+            .unwrap_or(false);
+        if orbiting {
             total_orbit -= total_motion * settings.orbit_sensitivity;
+            // Snap orbit target to the point in front of the camera at current radius
+            if total_motion.length_squared() > 0.0 {
+                // Camera position - (backward direction * radius) gives the center
+                state.center = transform.translation + transform.forward().as_vec3() * state.radius;
+            }
         }
         if settings.scroll_action == Some(PanOrbitAction::Orbit) {
-            total_orbit -= total_scroll_lines
-                * settings.scroll_line_sensitivity * settings.orbit_sensitivity;
+            total_orbit -=
+                total_scroll_lines * settings.scroll_line_sensitivity * settings.orbit_sensitivity;
             total_orbit -= total_scroll_pixels
-                * settings.scroll_pixel_sensitivity * settings.orbit_sensitivity;
+                * settings.scroll_pixel_sensitivity
+                * settings.orbit_sensitivity;
         }
 
         let mut total_zoom = Vec2::ZERO;
-        if settings.zoom_key.map(|key| kbd.pressed(key)).unwrap_or(false) {
+        if settings
+            .zoom_key
+            .map(|key| kbd.pressed(key))
+            .unwrap_or(false)
+        {
             total_zoom -= total_motion * settings.zoom_sensitivity;
         }
         if settings.scroll_action == Some(PanOrbitAction::Zoom) {
-            total_zoom -= total_scroll_lines
-                * settings.scroll_line_sensitivity * settings.zoom_sensitivity;
-            total_zoom -= total_scroll_pixels
-                * settings.scroll_pixel_sensitivity * settings.zoom_sensitivity;
+            total_zoom -=
+                total_scroll_lines * settings.scroll_line_sensitivity * settings.zoom_sensitivity;
+            total_zoom -=
+                total_scroll_pixels * settings.scroll_pixel_sensitivity * settings.zoom_sensitivity;
         }
 
         // Upon starting a new orbit maneuver (key is just pressed),
         // check if we are starting it upside-down
-        if settings.orbit_key.map(|mb| btn.just_pressed(mb)).unwrap_or(false) {
+        if settings
+            .orbit_key
+            .map(|mb| btn.just_pressed(mb))
+            .unwrap_or(false)
+        {
             state.upside_down = state.pitch < -FRAC_PI_2 || state.pitch > FRAC_PI_2;
         }
 
@@ -172,6 +208,10 @@ pub fn pan_orbit_camera(
         // Now we can actually do the things!
 
         let mut any = false;
+        if let Some(delta) = wasd_delta {
+            any = true;
+            state.center += delta * radius * 0.05;
+        }
 
         // To ZOOM, we need to multiply our radius.
         if total_zoom != Vec2::ZERO {
@@ -221,8 +261,7 @@ pub fn pan_orbit_camera(
         // for the first time and need to initialize)
         if any || state.is_added() {
             // YXZ Euler Rotation performs yaw/pitch/roll.
-            transform.rotation =
-                Quat::from_euler(EulerRot::YXZ, state.yaw, state.pitch, 0.0);
+            transform.rotation = Quat::from_euler(EulerRot::YXZ, state.yaw, state.pitch, 0.0);
             // To position the camera, get the backward direction vector
             // and place the camera at the desired radius from the center.
             transform.translation = state.center + transform.back() * state.radius;
