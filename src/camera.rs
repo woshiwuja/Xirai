@@ -82,7 +82,13 @@ pub fn spawn_camera(mut commands: Commands) {
     camera.state.radius = 50.0;
     camera.state.pitch = 15.0f32.to_radians();
     camera.state.yaw = 30.0f32.to_radians();
-    commands.spawn(camera);
+    commands.spawn((
+        camera,
+        crate::pp::PostProcessSettings {
+            intensity: 1.0,
+            ..Default::default()
+        },
+    ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 
