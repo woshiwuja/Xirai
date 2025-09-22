@@ -22,7 +22,7 @@ use bevy::{
         RenderApp,
     },
 };
-const SHADER_ASSET_PATH: &str = "shaders/pixelate_edges.wgsl";
+const SHADER_ASSET_PATH: &str = "shaders/pixel_art.wgsl";
 
 pub struct PostProcessPlugin;
 impl Plugin for PostProcessPlugin {
@@ -105,7 +105,7 @@ impl ViewNode for PostProcessNode {
     // This query will only run on the view entity
     type ViewQuery = (
         &'static ViewTarget,
-        // This makes sure the node only runs on cameras with the PostProcessSettings component
+        // This makes sure the node only runs on cameras with the PostProcessettings component
         &'static PostProcessSettings,
         // As there could be multiple post processing components sent to the GPU (one per camera),
         // we need to get the index of the one that is associated with the current view.
@@ -277,11 +277,41 @@ impl FromWorld for PostProcessPipeline {
     }
 }
 
-// This is the component that will get passed to the shader
-#[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
+#[derive(Component, ShaderType, Default, Clone, Copy, ExtractComponent)]
 pub struct PostProcessSettings {
-    pub intensity: f32,
-    // WebGL2 structs must be 16 byte aligned.
-    #[cfg(feature = "webgl2")]
-    _webgl2_padding: Vec3,
+    pub pixel_resolution: Vec2,
+    pub _pad0: Vec2,          // padding
+
+    pub edge_denoise: f32,
+    pub edge_intensity: f32,
+    pub color_levels: f32,
+    pub cel_levels: f32,
+
+    pub contrast: f32,
+    pub saturation: f32,
+    pub scanline_intensity: f32,
+    pub _pad1: f32,           // padding
+
+    pub window_size: Vec2,
+    pub _pad2: Vec2,          // padding
+
+    pub dithering_strength: f32,
+    pub edge_threshold: f32,
+    pub color_snap_strength: f32,
+    pub _pad3: f32,           // padding
+}
+
+impl PostProcessSettings {
+    pub fn new() -> Self {
+        let mut s: Self = Default::default();
+        // Fill padding with usable default values
+        s._pad0 = Vec2::ZERO;
+        s._pad1 = 0.5; // e.g., edge softness
+        s._pad2 = Vec2::ZERO;
+        s._pad3 = 0.0;
+        s.pixel_resolution = Vec2::new(240.0, 160.0);
+        s.window_size = Vec2::new(1920.0, 1080.0);
+        s.edge_intensity = 1.0;
+        s
+    }
 }
