@@ -3,11 +3,13 @@ use bevy::prelude::*;
 // Bundle to spawn our custom camera easily
 #[derive(Bundle, Default)]
 pub struct PanOrbitCameraBundle {
-    pub camera: Camera3d,
+    pub camera_3d: Camera3d,
+    pub camera: Camera,  // Add the base Camera component
+    pub transform: Transform,  // Add Transform component
+    pub global_transform: GlobalTransform,  // Add GlobalTransform
     pub state: PanOrbitState,
     pub settings: PanOrbitSettings,
 }
-
 // The internal state of the pan-orbit controller
 #[derive(Component)]
 pub struct PanOrbitState {
@@ -75,22 +77,38 @@ impl Default for PanOrbitSettings {
     }
 }
 pub fn spawn_camera(mut commands: Commands) {
-    let mut camera = PanOrbitCameraBundle::default();
-    // Position our camera using our component,
-    // not Transform (it would get overwritten)
-    camera.state.center = Vec3::new(1.0, 2.0, 3.0);
-    camera.state.radius = 50.0;
-    camera.state.pitch = 15.0f32.to_radians();
-    camera.state.yaw = 30.0f32.to_radians();
     commands.spawn((
-        camera,
+        PanOrbitCameraBundle {
+            transform: Transform::from_xyz(1.0, 2.0, 3.0),
+            state: PanOrbitState {
+                center: Vec3::new(1.0, 2.0, 3.0),
+                radius: 1.0,
+                pitch: 15.0f32.to_radians(),
+                yaw: 30.0f32.to_radians(),
+                ..default()
+            },
+            ..default()
+        },
+        crate::retrocamera::RetroCamera,
         crate::pp::PostProcessSettings {
-            intensity: 1.0,
+            pixel_resolution: Vec2::new(240.0, 160.0),
+            edge_intensity: 0.5,
+            color_levels: 4.0,
+            cel_levels: 100.0,
+            scanline_intensity: 2.5,
+            contrast: 1.0,
+            saturation: 0.7,
+            window_size: Vec2::new(240.0, 160.0), // Should match pixel_resolution
+            dithering_strength: 0.75,
+            edge_threshold: 0.05,
+            color_snap_strength: 0.5,
+            edge_denoise: 0.5,
             ..Default::default()
         },
     ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
+use bevy::render::view::RenderLayers;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -246,8 +264,8 @@ pub fn pan_orbit_camera(
                 state.yaw -= TAU;
             }
 
-            // Clamp pitch to 0..PI/2
-            state.pitch = state.pitch.clamp(-PI / 2.0, 0.0);
+            // Clamp pitch to -PI/2..PI/2
+            state.pitch = state.pitch.clamp(-PI / 2.0, PI / 2.0);
         }
 
         // To PAN, we can get the UP and RIGHT direction

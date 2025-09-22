@@ -1,7 +1,11 @@
 mod pp;
+mod retrocamera;
+use bevy::pbr::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 use bevy::{image, scene};
+use bevy::image::Image;
+use bevy::image::*;
 use bevy_mod_imgui::prelude::*;
 use bevy_rapier3d::prelude::*;
 use std::fs::{self, DirEntry};
@@ -11,6 +15,13 @@ mod ik;
 mod thumbnail;
 use bevy_rapier3d::prelude::*;
 use imgui;
+use std::f32::consts::{PI, TAU};
+use bevy::color::palettes::css::*;
+use bevy::prelude::*;
+mod ui;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+mod character_controller;
 #[derive(Resource)]
 struct ImguiState {
     demo_window_open: bool,
@@ -44,22 +55,23 @@ fn main() {
         .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(bevy_mod_imgui::ImguiPlugin::default())
         .add_systems(Startup, setup)
-        .add_systems(Startup, camera::spawn_camera)
         .add_systems(Startup, setup_game_assets)
         .add_systems(Startup, setup_physics)
         .add_systems(Startup, spawn_character)
-        //.add_systems(Startup, generate_thumbnails.after(setup_game_assets))
         .add_systems(Update, imgui_ui)
         .add_systems(Update, calc_cursor_pos)
         .add_systems(Update, draw_cursor.after(calc_cursor_pos))
         .add_systems(Update, spawn_asset.after(calc_cursor_pos))
         .add_systems(Update, alive_entities_ui)
+        .add_plugins(ui::UiPlugin)
         .add_systems(
             Update,
             camera::pan_orbit_camera.run_if(any_with_component::<camera::PanOrbitState>),
         )
         .add_plugins(RapierPickingPlugin)
         .add_plugins(pp::PostProcessPlugin)
+        .add_systems(Startup, camera::spawn_camera)
+        .add_plugins(retrocamera::RetroRenderPlugin{ width: 240, height: 160 })
         .run();
 }
 
@@ -69,9 +81,25 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
-    let texture_handle = asset_server.load("textures/grass_ground.png");
+    let size = Extent3d {
+        width: 280,
+        height: 144,
+        ..default()
+    };
+    let mut image = Image::new_fill(
+        size,
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Bgra8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    // Abilitiamo l'uso come render target:
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+    // Filtro nearest-neighbor per mantenere il pixelato:
+    image.sampler = ImageSampler::nearest(); // filtro mag/min = Nearest:contentReference[oaicite:3]{index=3}
+    //let texture_handle = asset_server.load("textures/grass_ground.png");
     let material_handle = materials.add(StandardMaterial {
-        base_color_texture: Some(texture_handle.clone()),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
@@ -87,15 +115,41 @@ fn setup(
             }
         }
     }
-
+    let ground_material = materials.add(StandardMaterial {
+        base_color: Color::WHITE, // Green color
+        alpha_mode: AlphaMode::Opaque,
+        unlit: false, // Flat pixel art look
+        metallic: 0.0,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
+        ..default()
+    });
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
-        MeshMaterial3d(material_handle),
+        MeshMaterial3d(ground_material),
         Ground,
     ));
     commands.spawn((
-        DirectionalLight::default(),
-        Transform::from_translation(Vec3::ONE).looking_at(Vec3::ZERO, Vec3::Y),
+        DirectionalLight{
+            shadows_enabled: true,
+            color: YELLOW.into(),
+            illuminance: 2000.0,
+            shadow_depth_bias: 0.0005,
+            shadow_normal_bias: 0.05,
+            ..default()
+        },
+        Transform {
+            translation: Vec3::new(0.0, 40.0, 0.0),
+            rotation: Quat::from_rotation_x(-PI / 2.0),
+            ..default()
+        },
+        // The default cascade config is designed to handle large scenes.
+        // As this example has a much smaller world, we can tighten the shadow
+        // bounds for better visual quality.
+        CascadeShadowConfigBuilder {
+            ..default()
+        }
+        .build(),
     ));
     commands.insert_resource(Cursor {
         cursor_position: Vec3::ZERO,
@@ -245,13 +299,22 @@ fn setup_physics(
         .insert(Friction::coefficient(1.0))
         .insert(Transform::from_xyz(0.0, 0.0, 0.0));
 
+
+    let ball_material = materials.add(StandardMaterial {
+        base_color: GREEN.into(), // Green color
+        alpha_mode: AlphaMode::Opaque,
+        metallic: 0.0,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
+        ..default()
+    });
     /* Create the bouncing ball. */
     commands.spawn((
         RigidBody::Dynamic,
         Collider::ball(0.5),
-        Restitution::coefficient(1.0),
+        Restitution::coefficient(2.0),
         Mesh3d(meshes.add(Sphere::new(0.5))),
-        MeshMaterial3d(materials.add(Color::WHITE)),
+        MeshMaterial3d(ball_material),
         Transform::from_xyz(0.0, 4.0, 0.0),
     ));
 }
@@ -296,32 +359,59 @@ fn spawn_asset(
 }
 
 fn calc_cursor_pos(
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    retro_camera_query: Query<(&Camera, &GlobalTransform), With<retrocamera::RetroCamera>>,
+    sprite_query: Query<&Transform, With<Sprite>>,
     ground: Single<&GlobalTransform, With<Ground>>,
     windows: Query<&Window>,
     mut cursor: ResMut<Cursor>,
+    target: Res<retrocamera::RetroRenderTarget>,
 ) {
-    let Ok(windows) = windows.single() else {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
         return;
     };
 
-    let (camera, camera_transform) = *camera_query;
-
-    let Some(cursor_position) = windows.cursor_position() else {
+    let Ok((retro_camera, retro_transform)) = retro_camera_query.get_single() else {
         return;
     };
 
-    // Calculate a ray pointing from the camera into the world based on the cursor's position.
-    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) else {
+    let Ok(sprite_transform) = sprite_query.get_single() else {
         return;
     };
 
-    // Calculate if and where the ray is hitting the ground plane.
-    let Some(distance) =
-        ray.intersect_plane(ground.translation(), InfinitePlane3d::new(ground.up()))
-    else {
+    let window_size = Vec2::new(window.width(), window.height());
+    let texture_size = Vec2::new(target.width as f32, target.height as f32);
+    
+    // Get the actual scale from the sprite transform
+    let scale = sprite_transform.scale.x; // Assuming uniform scaling
+    let sprite_size = texture_size * scale;
+    
+    // Calculate sprite position on screen (centered)
+    let sprite_offset = (window_size - sprite_size) * 0.5;
+    
+    // Convert screen cursor to sprite-local coordinates
+    let sprite_local = cursor_position - sprite_offset;
+    
+    // Check if cursor is within sprite bounds
+    if sprite_local.x < 0.0 || sprite_local.y < 0.0 || 
+       sprite_local.x > sprite_size.x || sprite_local.y > sprite_size.y {
+        return; // Cursor is outside the sprite
+    }
+    
+    // Convert to texture coordinates (0 to texture_size)
+    let texture_coords = sprite_local / scale;
+    
+    // Use the retro camera to cast the ray
+    let Ok(ray) = retro_camera.viewport_to_world(retro_transform, texture_coords) else {
         return;
     };
+
+    let Some(distance) = ray.intersect_plane(ground.translation(), InfinitePlane3d::new(ground.up())) else {
+        return;
+    };
+    
     cursor.cursor_position = ray.get_point(distance);
 }
 
@@ -396,20 +486,82 @@ fn walk_subdirs(commands: &mut Commands, dir: &Path) {
 #[derive(Component)]
 struct Character;
 
-fn spawn_character(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_character(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
     println!("spawning character");
-
+    const ANIMATION_PATH: &str = "humanoid.glb";
+    const PATH: &str = "humanoid.glb";
     // 1️⃣ Spawn scena GLTF
-    let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset("man.glb"));
+    let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(PATH));
+    let (graph, index) =
+        AnimationGraph::from_clip(asset_server.load(GltfAssetLabel::Animation(0).from_asset(ANIMATION_PATH)));
+
+    // Store the animation graph as an asset.
+    let graph_handle = graphs.add(graph);
+
+    // Create a component that stores a reference to our animation.
+    let animation_to_play = AnimationToPlay {
+        graph_handle,
+        index,
+    };
     commands
         .spawn((
+            animation_to_play,
             SceneRoot(scene_handle.clone()),
-            Transform::from_xyz(0.0, 5.0, 5.0),
+            Transform::from_xyz(0.0, 2.0, 5.0),
             Character,
             AssetName("Character Man".to_string()),
+            RigidBody::Dynamic,
+            LockedAxes::ROTATION_LOCKED_X,
+            Collider::capsule_y(0.9, 0.3),
+            Friction::coefficient(1.0),
+            Restitution::coefficient(0.0),
+
         ))
         // 2️⃣ Quando la scena è pronta, costruisci root e catene IK
-        .observe(setup_character_skeleton_and_ik);
+        //.observe(setup_character_skeleton_and_ik);
+    .observe(play_animation_when_ready);
+}
+#[derive(Component)]
+struct AnimationToPlay {
+    graph_handle: Handle<AnimationGraph>,
+    index: AnimationNodeIndex,
+}
+
+fn play_animation_when_ready(
+    trigger: Trigger<SceneInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    animations_to_play: Query<&AnimationToPlay>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    // The entity we spawned in `setup_mesh_and_animation` is the trigger's target.
+    // Start by finding the AnimationToPlay component we added to that entity.
+    if let Ok(animation_to_play) = animations_to_play.get(trigger.target()) {
+        // The SceneRoot component will have spawned the scene as a hierarchy
+        // of entities parented to our entity. Since the asset contained a skinned
+        // mesh and animations, it will also have spawned an animation player
+        // component. Search our entity's descendants to find the animation player.
+        for child in children.iter_descendants(trigger.target()) {
+            if let Ok(mut player) = players.get_mut(child) {
+                // Tell the animation player to start the animation and keep
+                // repeating it.
+                //
+                // If you want to try stopping and switching animations, see the
+                // `animated_mesh_control.rs` example.
+                player.play(animation_to_play.index).repeat();
+
+                // Add the animation graph. This only needs to be done once to
+                // connect the animation player to the mesh.
+                commands
+                    .entity(child)
+                    .insert(AnimationGraphHandle(animation_to_play.graph_handle.clone()));
+            }
+        }
+    }
 }
 
 /// Funzione chiamata quando il GLTF è pronto
@@ -421,6 +573,7 @@ fn setup_character_skeleton_and_ik(
     mut commands: Commands,
 ) {
     let root_entity = trigger.target();
+
     // Helper per trovare bones per nome parziale
     let find_bone = |partial: &str| -> Option<Entity> {
         children.iter_descendants(root_entity).find(|&e| {
@@ -431,43 +584,60 @@ fn setup_character_skeleton_and_ik(
             })
         })
     };
+
+    // Debug: print all bone names
     for descendant in children.iter_descendants(root_entity) {
         if let Ok(name) = names.get(descendant) {
             println!("Descendant bone: {}", name.as_str());
         }
     }
+
+    // Find root bone
     let root_bone = children.iter_descendants(root_entity).find(|&e| {
         names.get(e).map_or(false, |name| {
             let n = name.as_str().to_lowercase();
-            n.contains("pelvis") || n.contains("root")
+            n.contains("pelvis") || n.contains("root") || n.contains("hips")
         })
     });
 
     let root_bone = match root_bone {
         Some(b) => b,
         None => {
-            warn!("Root bone non trovato, abort setup");
+            warn!("Root bone not found, aborting setup");
             return;
         }
     };
 
-    // 1️⃣ Assegna RigidBody al root
-    commands
-        .entity(root_bone)
-        .insert(RigidBody::Dynamic)
-        .insert(Restitution::coefficient(0.0))
-        .insert(Friction::coefficient(1.0))
-        .insert(Alive);
+    // Setup root bone with physics
+    commands.entity(root_bone).insert((
+        RigidBody::Dynamic,
+        LockedAxes::ROTATION_LOCKED,
+        Restitution::coefficient(0.0),
+        Friction::coefficient(1.0),
+        Alive,
+        RapierPickable,
+    ));
 
-    // Trova il bone del pelvis
-    let pelvis_bone = children.iter_descendants(root_entity).find(|&e| {
-        names.get(e).map_or(false, |name| {
-            name.as_str().to_lowercase().contains("pelvis")
-        })
-    });
+    // Setup torso collider
+    setup_torso_collider(&mut commands, &find_bone, &transforms);
 
-    if let (Some(pelvis), Some(neck)) = (pelvis_bone, find_bone("neck")) {
-        // Calculate torso height from pelvis to neck
+    // Setup limb colliders and joints
+    setup_arm_colliders(&mut commands, &find_bone, "left");
+    setup_arm_colliders(&mut commands, &find_bone, "right");
+    setup_leg_colliders_and_joints(&mut commands, &find_bone, &transforms, root_bone, "left");
+    setup_leg_colliders_and_joints(&mut commands, &find_bone, &transforms, root_bone, "right");
+
+    // Uncomment if you want head/neck setup
+    // setup_head_and_neck(&mut commands, &find_bone, &transforms, root_bone);
+}
+
+fn setup_torso_collider(
+    commands: &mut Commands,
+    find_bone: &impl Fn(&str) -> Option<Entity>,
+    transforms: &Query<&Transform>,
+) {
+    if let (Some(pelvis), Some(neck)) = (find_bone("pelvis"), find_bone("neck")) {
+        // Calculate torso dimensions
         let pelvis_pos = transforms
             .get(pelvis)
             .map(|t| t.translation)
@@ -476,117 +646,104 @@ fn setup_character_skeleton_and_ik(
             .get(neck)
             .map(|t| t.translation)
             .unwrap_or(Vec3::ZERO);
-        let torso_height = (neck_pos.y - pelvis_pos.y).abs().max(0.1); // avoid zero/negative
+
+        let torso_height = (neck_pos.y - pelvis_pos.y).abs().max(0.1);
         let torso_radius = 0.18;
-        commands.entity(pelvis).with_children(|p| {
-            p.spawn((
+
+        commands.entity(pelvis).with_children(|parent| {
+            parent.spawn((
                 Collider::capsule_y(torso_height / 2.0, torso_radius),
                 Transform::from_xyz(0.0, torso_height / 2.0, 0.0),
             ));
         });
     }
+}
 
-    // Helper per aggiungere collider come child
-    let add_collider_child = |parent: Entity, shape: Collider| {
-        commands.entity(parent).with_children(|p| {
-            p.spawn((shape, Transform::default()));
-        });
-    };
-
-    //    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
-    //        find_bone("upper_arm_left"),
-    //        find_bone("forearm_left"),
-    //        find_bone("hand_left"),
-    //    ) {
-    //        println!("Creating left arm");
-    //        // Bone colliders temporarily disabled
-    //        // commands.entity(upper_arm).with_children(|p| {
-    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
-    //        // });
-    //        // commands.entity(forearm).with_children(|p| {
-    //        //     p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
-    //        // });
-    //        // commands.entity(hand).with_children(|p| {
-    //        //     p.spawn((Collider::ball(0.05), Transform::default()));
-    //        // });
-    //        let forearm_pos = transforms.get(forearm).unwrap().translation;
-    //        let pole = forearm_pos + Vec3::new(0.0, 0.0, 0.3);
-    //        let upper_arm_pos = transforms.get(upper_arm).unwrap().translation;
-    //        // T-pose: hand target directly to the left
-    //        let tpose_distance = 0.5; // adjust as needed for your model
-    //        let hand_target = upper_arm_pos + Vec3::new(-tpose_distance, 0.0, 0.0);
-    //        // Add joints: upper_arm -> forearm, forearm -> hand
-    //        commands
-    //            .entity(forearm)
-    //            .insert(ImpulseJoint::new(upper_arm, SphericalJointBuilder::new()));
-    //        commands
-    //            .entity(hand)
-    //            .insert(ImpulseJoint::new(forearm, SphericalJointBuilder::new()));
-    //        commands.spawn(IKChain {
-    //            bones: vec![upper_arm, forearm, hand],
-    //            target: hand_target,
-    //            pole_target: Some(pole),
-    //            iterations: 10,
-    //        });
-    //    }
-    //
-    //    // Braccio destro
-    // Left arm colliders
+fn setup_arm_colliders(
+    commands: &mut Commands,
+    find_bone: &impl Fn(&str) -> Option<Entity>,
+    side: &str,
+) {
     if let (Some(upper_arm), Some(forearm), Some(hand)) = (
-        find_bone("upper_arm_left"),
-        find_bone("forearm_left"),
-        find_bone("hand_left"),
+        find_bone(&format!("upper_arm_{}", side)),
+        find_bone(&format!("forearm_{}", side)),
+        find_bone(&format!("hand_{}", side)),
     ) {
-        println!("Creating left arm");
-        commands.entity(upper_arm).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
-        });
-        commands.entity(forearm).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
-        });
-        commands.entity(hand).with_children(|p| {
-            p.spawn((Collider::ball(0.05), Transform::default()));
-        });
-    }
+        println!("Creating {} arm colliders", side);
 
-    // Right arm colliders
-    if let (Some(upper_arm), Some(forearm), Some(hand)) = (
-        find_bone("upper_arm_right"),
-        find_bone("forearm_right"),
-        find_bone("hand_right"),
-    ) {
-        println!("Creating right arm");
-        commands.entity(upper_arm).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+        // Upper arm collider
+        commands.entity(upper_arm).with_children(|parent| {
+            parent.spawn((
+                Collider::capsule_y(0.12, 0.04),      // length, radius
+                Transform::from_xyz(0.0, -0.06, 0.0), // offset to center
+            ));
         });
-        commands.entity(forearm).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+
+        // Forearm collider
+        commands.entity(forearm).with_children(|parent| {
+            parent.spawn((
+                Collider::capsule_y(0.10, 0.035),
+                Transform::from_xyz(0.0, -0.05, 0.0),
+            ));
         });
-        commands.entity(hand).with_children(|p| {
-            p.spawn((Collider::ball(0.05), Transform::default()));
+
+        // Hand collider
+        commands.entity(hand).with_children(|parent| {
+            parent.spawn((Collider::ball(0.04), Transform::from_xyz(0.0, -0.03, 0.0)));
         });
+
+        // Add joints between arm segments
+        commands
+            .entity(forearm)
+            .insert(ImpulseJoint::new(upper_arm, SphericalJointBuilder::new()));
+        commands
+            .entity(hand)
+            .insert(ImpulseJoint::new(forearm, SphericalJointBuilder::new()));
     }
-    // Gamba sinistra
+}
+
+fn setup_leg_colliders_and_joints(
+    commands: &mut Commands,
+    find_bone: &impl Fn(&str) -> Option<Entity>,
+    transforms: &Query<&Transform>,
+    root_bone: Entity,
+    side: &str,
+) {
     if let (Some(thigh), Some(shin), Some(foot)) = (
-        find_bone("thigh_left"),
-        find_bone("shin_left"),
-        find_bone("foot_left"),
+        find_bone(&format!("thigh_{}", side)),
+        find_bone(&format!("shin_{}", side)),
+        find_bone(&format!("foot_{}", side)),
     ) {
-        println!("Creating left leg");
-        commands.entity(thigh).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.06, 0.12), Transform::default()));
+        println!("Creating {} leg colliders and joints", side);
+
+        // Thigh collider
+        commands.entity(thigh).with_children(|parent| {
+            parent.spawn((
+                Collider::capsule_y(0.20, 0.06), // length, radius
+                Transform::from_xyz(0.0, -0.10, 0.0),
+            ));
         });
-        commands.entity(shin).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+
+        // Shin collider
+        commands.entity(shin).with_children(|parent| {
+            parent.spawn((
+                Collider::capsule_y(0.18, 0.04),
+                Transform::from_xyz(0.0, -0.09, 0.0),
+            ));
         });
-        commands.entity(foot).with_children(|p| {
-            p.spawn((Collider::ball(0.06), Transform::default()));
+
+        // Foot collider
+        commands.entity(foot).with_children(|parent| {
+            parent.spawn((
+                Collider::cuboid(0.08, 0.03, 0.12), // foot-shaped
+                Transform::from_xyz(0.0, -0.03, 0.06),
+            ));
         });
-        let root_pos = transforms.get(root_bone).unwrap().translation;
-        let thigh_pos = transforms.get(thigh).unwrap().translation;
-        // Project root position onto ground (Y=0)
-        let foot_target = Vec3::new(root_pos.x + 0.15, 0.0, root_pos.z); // left foot offset from root
-                                                                         // Add joints: thigh -> shin, shin -> foot
+
+        // Add joints between leg segments
+        commands
+            .entity(thigh)
+            .insert(ImpulseJoint::new(root_bone, SphericalJointBuilder::new()));
         commands
             .entity(shin)
             .insert(ImpulseJoint::new(thigh, SphericalJointBuilder::new()));
@@ -594,55 +751,38 @@ fn setup_character_skeleton_and_ik(
             .entity(foot)
             .insert(ImpulseJoint::new(shin, SphericalJointBuilder::new()));
     }
+}
 
-    // Gamba destra
-    if let (Some(thigh), Some(shin), Some(foot)) = (
-        find_bone("thigh_right"),
-        find_bone("shin_right"),
-        find_bone("foot_right"),
-    ) {
-        println!("Creating right leg");
-        commands.entity(thigh).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.06, 0.12), Transform::default()));
+fn setup_head_and_neck(
+    commands: &mut Commands,
+    find_bone: &impl Fn(&str) -> Option<Entity>,
+    transforms: &Query<&Transform>,
+    root_bone: Entity,
+) {
+    if let (Some(neck), Some(head)) = (find_bone("neck"), find_bone("head")) {
+        println!("Creating neck and head");
+
+        // Add colliders
+        commands.entity(neck).with_children(|parent| {
+            parent.spawn((
+                Collider::capsule_y(0.06, 0.03),
+                Transform::from_xyz(0.0, 0.03, 0.0),
+            ));
         });
-        commands.entity(shin).with_children(|p| {
-            p.spawn((Collider::capsule_y(0.05, 0.1), Transform::default()));
+
+        commands.entity(head).with_children(|parent| {
+            parent.spawn((Collider::ball(0.08), Transform::default()));
         });
-        commands.entity(foot).with_children(|p| {
-            p.spawn((Collider::ball(0.06), Transform::default()));
-        });
-        let root_pos = transforms.get(root_bone).unwrap().translation;
-        let thigh_pos = transforms.get(thigh).unwrap().translation;
-        // Project root position onto ground (Y=0)
-        let foot_target = Vec3::new(root_pos.x - 0.15, 0.0, root_pos.z); // right foot offset from root
+
+        // Find spine or use root as parent for neck joint
+        let spine_parent = find_bone("spine").unwrap_or(root_bone);
+
+        commands.entity(neck).insert(ImpulseJoint::new(
+            spine_parent,
+            SphericalJointBuilder::new(),
+        ));
         commands
-            .entity(shin)
-            .insert(ImpulseJoint::new(thigh, SphericalJointBuilder::new()));
-        commands
-            .entity(foot)
-            .insert(ImpulseJoint::new(shin, SphericalJointBuilder::new()));
+            .entity(head)
+            .insert(ImpulseJoint::new(neck, SphericalJointBuilder::new()));
     }
-
-    // Collo/Head
-    // if let (Some(neck), Some(head)) = (find_bone("neck"), find_bone("head")) {
-    //     println!("Creating neck and head");
-    //     // Find spine or use root as parent for neck joint
-    //     let spine_or_root = find_bone("spine").or(Some(root_bone));
-    //     if let Some(parent_bone) = spine_or_root {
-    //         commands
-    //             .entity(neck)
-    //             .insert(ImpulseJoint::new(parent_bone, SphericalJointBuilder::new()));
-    //     }
-    //     // Optionally add joint from neck to head
-    //     commands
-    //         .entity(head)
-    //         .insert(ImpulseJoint::new(neck, SphericalJointBuilder::new()));
-    //     // IK chain for neck and head
-    //     commands.spawn(IKChain {
-    //         bones: vec![neck, head],
-    //         target: transforms.get(head).unwrap().translation + Vec3::new(0.0, 0.2, 0.0),
-    //         pole_target: None,
-    //         iterations: 10,
-    //     });
-    // }
 }
