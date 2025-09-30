@@ -22,7 +22,7 @@ use bevy::{
         RenderApp,
     },
 };
-const SHADER_ASSET_PATH: &str = "shaders/pixel_art.wgsl";
+const SHADER_ASSET_PATH: &str = "shaders/quantize.wgsl";
 
 pub struct PostProcessPlugin;
 impl Plugin for PostProcessPlugin {
@@ -299,6 +299,8 @@ pub struct PostProcessSettings {
     pub edge_threshold: f32,
     pub color_snap_strength: f32,
     pub _pad3: f32,           // padding
+    pub palette: [Vec4; 16], // 16 colori (RGBA in [0,1])
+    pub color_count: u32,    // quanti sono effettivamente usati
 }
 
 impl PostProcessSettings {

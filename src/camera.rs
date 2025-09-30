@@ -4,9 +4,9 @@ use bevy::prelude::*;
 #[derive(Bundle, Default)]
 pub struct PanOrbitCameraBundle {
     pub camera_3d: Camera3d,
-    pub camera: Camera,  // Add the base Camera component
-    pub transform: Transform,  // Add Transform component
-    pub global_transform: GlobalTransform,  // Add GlobalTransform
+    pub camera: Camera,                    // Add the base Camera component
+    pub transform: Transform,              // Add Transform component
+    pub global_transform: GlobalTransform, // Add GlobalTransform
     pub state: PanOrbitState,
     pub settings: PanOrbitSettings,
 }
@@ -87,6 +87,10 @@ pub fn spawn_camera(mut commands: Commands) {
                 yaw: 30.0f32.to_radians(),
                 ..default()
             },
+            camera: Camera { 
+                hdr:true,
+                ..default()
+            },
             ..default()
         },
         crate::retrocamera::RetroCamera,
@@ -105,6 +109,15 @@ pub fn spawn_camera(mut commands: Commands) {
             edge_denoise: 0.5,
             ..Default::default()
         },
+        //crate::jump_flood::OutlineSettings::new()
+        //    .with_thickness(1.5)
+        //    .with_color(Vec4::new(0.0, 0.0, 0.0, 1.0)) // Outline nero
+        //    .with_threshold(0.5),
+        //crate::simple_outline::SimpleOutlineSettings::new()
+        //    .with_thickness(2.0)
+        //    .with_color(Vec4::new(0.0, 0.0, 0.0, 1.0))
+        //    .with_threshold(0.1)
+        //    .with_intensity(1.0),
     ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};

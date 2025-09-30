@@ -1,33 +1,42 @@
 mod pp;
+//mod jump_flood;
+mod chess;
+use bevy::color::palettes::css::*;
+mod camera;
+mod character_controller;
+mod ground;
+mod ik;
+mod pastel;
 mod retrocamera;
-use bevy::pbr::CascadeShadowConfigBuilder;
-use bevy::prelude::*;
-use bevy::scene::SceneInstanceReady;
-use bevy::{image, scene};
+mod simple_outline;
+mod ui;
+use bevy::color::palettes::css::*;
 use bevy::image::Image;
 use bevy::image::*;
+use bevy::pbr::CascadeShadowConfigBuilder;
+use bevy::prelude::*;
+use bevy::remote::http::RemoteHttpPlugin;
+use bevy::remote::RemotePlugin;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::scene::SceneInstanceReady;
+use bevy::{image, scene};
 use bevy_mod_imgui::prelude::*;
+use bevy_mod_outline::{
+    AsyncSceneInheritOutline, AutoGenerateOutlineNormalsPlugin, OutlinePlugin, OutlineVolume,
+};
 use bevy_rapier3d::prelude::*;
-use std::fs::{self, DirEntry};
-use std::path::Path;
-mod camera;
-mod ik;
-mod thumbnail;
 use bevy_rapier3d::prelude::*;
 use imgui;
 use std::f32::consts::{PI, TAU};
-use bevy::color::palettes::css::*;
-use bevy::prelude::*;
-mod ui;
-use bevy::render::render_asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-mod character_controller;
+use std::fs::{self, DirEntry};
+use std::path::Path;
+mod board;
+mod outline;
 #[derive(Resource)]
 struct ImguiState {
     demo_window_open: bool,
 }
-#[derive(Component)]
-struct Ground;
 #[derive(Component)]
 struct Alive;
 #[derive(Component)]
@@ -46,14 +55,19 @@ struct Cursor {
 
 fn main() {
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgba(0.2, 0.2, 0.2, 1.0)))
+    app.insert_resource(ClearColor(BLUE.into()))
         .insert_resource(ImguiState {
             demo_window_open: true,
         })
         .add_plugins(DefaultPlugins)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugins(RapierDebugRenderPlugin::default())
+        //.add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(bevy_mod_imgui::ImguiPlugin::default())
+        .add_plugins(retrocamera::RetroRenderPlugin {
+            width: 240,
+            height: 160,
+        })
+        .add_plugins(outline::OutlinePlugin)
         .add_systems(Startup, setup)
         .add_systems(Startup, setup_game_assets)
         .add_systems(Startup, setup_physics)
@@ -69,9 +83,13 @@ fn main() {
             camera::pan_orbit_camera.run_if(any_with_component::<camera::PanOrbitState>),
         )
         .add_plugins(RapierPickingPlugin)
-        .add_plugins(pp::PostProcessPlugin)
         .add_systems(Startup, camera::spawn_camera)
-        .add_plugins(retrocamera::RetroRenderPlugin{ width: 240, height: 160 })
+        //.add_plugins(jump_flood::JumpFloodOutlinePlugin)
+        //.add_plugins(pp::PostProcessPlugin)
+        .add_plugins(RemotePlugin::default())
+        .add_plugins(RemoteHttpPlugin::default())
+        .add_plugins(chess::ChessPlugin)
+        .add_plugins((OutlinePlugin, AutoGenerateOutlineNormalsPlugin::default()))
         .run();
 }
 
@@ -98,10 +116,10 @@ fn setup(
         TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     // Filtro nearest-neighbor per mantenere il pixelato:
     image.sampler = ImageSampler::nearest(); // filtro mag/min = Nearest:contentReference[oaicite:3]{index=3}
-    //let texture_handle = asset_server.load("textures/grass_ground.png");
+                                             //let texture_handle = asset_server.load("textures/grass_ground.png");
     let material_handle = materials.add(StandardMaterial {
         alpha_mode: AlphaMode::Blend,
-        unlit: true,
+        unlit: false,
         ..default()
     });
 
@@ -116,7 +134,7 @@ fn setup(
         }
     }
     let ground_material = materials.add(StandardMaterial {
-        base_color: Color::WHITE, // Green color
+        base_color: GREEN.into(), // Green color
         alpha_mode: AlphaMode::Opaque,
         unlit: false, // Flat pixel art look
         metallic: 0.0,
@@ -127,12 +145,12 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(ground_material),
-        Ground,
+        ground::Ground,
     ));
     commands.spawn((
-        DirectionalLight{
+        DirectionalLight {
             shadows_enabled: true,
-            color: YELLOW.into(),
+            color: WHITE.into(),
             illuminance: 2000.0,
             shadow_depth_bias: 0.0005,
             shadow_normal_bias: 0.05,
@@ -140,16 +158,10 @@ fn setup(
         },
         Transform {
             translation: Vec3::new(0.0, 40.0, 0.0),
-            rotation: Quat::from_rotation_x(-PI / 2.0),
-            ..default()
+            rotation: Quat::from_rotation_x(-PI / 4.0) * Quat::from_rotation_y(PI / 8.0),
+            ..Default::default()
         },
-        // The default cascade config is designed to handle large scenes.
-        // As this example has a much smaller world, we can tighten the shadow
-        // bounds for better visual quality.
-        CascadeShadowConfigBuilder {
-            ..default()
-        }
-        .build(),
+        CascadeShadowConfigBuilder { ..default() }.build(),
     ));
     commands.insert_resource(Cursor {
         cursor_position: Vec3::ZERO,
@@ -273,7 +285,7 @@ fn alive_entities_ui(mut context: NonSendMut<ImguiContext>, query: Query<Entity,
 }
 fn draw_cursor(
     cursor: Res<Cursor>,
-    ground: Single<&GlobalTransform, With<Ground>>,
+    ground: Single<&GlobalTransform, With<ground::Ground>>,
     mut gizmos: Gizmos,
     buttons: Res<ButtonInput<MouseButton>>,
 ) {
@@ -299,7 +311,6 @@ fn setup_physics(
         .insert(Friction::coefficient(1.0))
         .insert(Transform::from_xyz(0.0, 0.0, 0.0));
 
-
     let ball_material = materials.add(StandardMaterial {
         base_color: GREEN.into(), // Green color
         alpha_mode: AlphaMode::Opaque,
@@ -309,14 +320,16 @@ fn setup_physics(
         ..default()
     });
     /* Create the bouncing ball. */
-    commands.spawn((
-        RigidBody::Dynamic,
-        Collider::ball(0.5),
-        Restitution::coefficient(2.0),
-        Mesh3d(meshes.add(Sphere::new(0.5))),
-        MeshMaterial3d(ball_material),
-        Transform::from_xyz(0.0, 4.0, 0.0),
-    ));
+    commands
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::ball(0.5),
+            Restitution::coefficient(2.0),
+            Mesh3d(meshes.add(Sphere::new(0.5))),
+            MeshMaterial3d(ball_material),
+            Transform::from_xyz(0.0, 4.0, 0.0),
+        ))
+        .insert(outline::Outlined);
 }
 
 fn spawn_asset(
@@ -343,6 +356,12 @@ fn spawn_asset(
                         cursor.cursor_position.z,
                     ),
                     RigidBody::Fixed,
+                    AsyncSceneInheritOutline::default(),
+                    OutlineVolume {
+                        visible: true,
+                        width: 2.0,
+                        colour: BLACK.into(),
+                    },
                     Alive,
                 ))
                 .id();
@@ -361,7 +380,7 @@ fn spawn_asset(
 fn calc_cursor_pos(
     retro_camera_query: Query<(&Camera, &GlobalTransform), With<retrocamera::RetroCamera>>,
     sprite_query: Query<&Transform, With<Sprite>>,
-    ground: Single<&GlobalTransform, With<Ground>>,
+    ground: Single<&GlobalTransform, With<ground::Ground>>,
     windows: Query<&Window>,
     mut cursor: ResMut<Cursor>,
     target: Res<retrocamera::RetroRenderTarget>,
@@ -383,35 +402,40 @@ fn calc_cursor_pos(
 
     let window_size = Vec2::new(window.width(), window.height());
     let texture_size = Vec2::new(target.width as f32, target.height as f32);
-    
+
     // Get the actual scale from the sprite transform
     let scale = sprite_transform.scale.x; // Assuming uniform scaling
     let sprite_size = texture_size * scale;
-    
+
     // Calculate sprite position on screen (centered)
     let sprite_offset = (window_size - sprite_size) * 0.5;
-    
+
     // Convert screen cursor to sprite-local coordinates
     let sprite_local = cursor_position - sprite_offset;
-    
+
     // Check if cursor is within sprite bounds
-    if sprite_local.x < 0.0 || sprite_local.y < 0.0 || 
-       sprite_local.x > sprite_size.x || sprite_local.y > sprite_size.y {
+    if sprite_local.x < 0.0
+        || sprite_local.y < 0.0
+        || sprite_local.x > sprite_size.x
+        || sprite_local.y > sprite_size.y
+    {
         return; // Cursor is outside the sprite
     }
-    
+
     // Convert to texture coordinates (0 to texture_size)
     let texture_coords = sprite_local / scale;
-    
+
     // Use the retro camera to cast the ray
     let Ok(ray) = retro_camera.viewport_to_world(retro_transform, texture_coords) else {
         return;
     };
 
-    let Some(distance) = ray.intersect_plane(ground.translation(), InfinitePlane3d::new(ground.up())) else {
+    let Some(distance) =
+        ray.intersect_plane(ground.translation(), InfinitePlane3d::new(ground.up()))
+    else {
         return;
     };
-    
+
     cursor.cursor_position = ray.get_point(distance);
 }
 
@@ -490,14 +514,16 @@ fn spawn_character(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     println!("spawning character");
-    const ANIMATION_PATH: &str = "humanoid.glb";
-    const PATH: &str = "humanoid.glb";
+    const ANIMATION_PATH: &str = "female.glb";
+    let clip_handle: Handle<AnimationClip> =
+        asset_server.load(GltfAssetLabel::Animation(0).from_asset(ANIMATION_PATH));
+    let (graph, index) = AnimationGraph::from_clip(clip_handle);
+    const PATH: &str = "female.glb";
     // 1️⃣ Spawn scena GLTF
     let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(PATH));
-    let (graph, index) =
-        AnimationGraph::from_clip(asset_server.load(GltfAssetLabel::Animation(0).from_asset(ANIMATION_PATH)));
 
     // Store the animation graph as an asset.
     let graph_handle = graphs.add(graph);
@@ -511,19 +537,29 @@ fn spawn_character(
         .spawn((
             animation_to_play,
             SceneRoot(scene_handle.clone()),
-            Transform::from_xyz(0.0, 2.0, 5.0),
+            Transform::from_xyz(0.0, 3.0, 5.0),
             Character,
             AssetName("Character Man".to_string()),
             RigidBody::Dynamic,
             LockedAxes::ROTATION_LOCKED_X,
-            Collider::capsule_y(0.9, 0.3),
             Friction::coefficient(1.0),
             Restitution::coefficient(0.0),
-
+            AsyncSceneInheritOutline::default(),
+            OutlineVolume {
+                visible: true,
+                width: 2.0,
+                colour: BLACK.into(),
+            },
         ))
+        .with_children(|children| {
+            children.spawn((
+                Collider::capsule_y(0.6, 0.2),
+                Transform::from_xyz(0.0, 1.0, 0.0),
+            ));
+        })
         // 2️⃣ Quando la scena è pronta, costruisci root e catene IK
         //.observe(setup_character_skeleton_and_ik);
-    .observe(play_animation_when_ready);
+        .observe(play_animation_when_ready);
 }
 #[derive(Component)]
 struct AnimationToPlay {
@@ -563,7 +599,6 @@ fn play_animation_when_ready(
         }
     }
 }
-
 /// Funzione chiamata quando il GLTF è pronto
 fn setup_character_skeleton_and_ik(
     trigger: Trigger<scene::SceneInstanceReady>,
