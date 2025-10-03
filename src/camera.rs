@@ -87,37 +87,31 @@ pub fn spawn_camera(mut commands: Commands) {
                 yaw: 30.0f32.to_radians(),
                 ..default()
             },
-            camera: Camera { 
-                hdr:true,
-                ..default()
-            },
+            camera: Camera { hdr:true, ..default() },
             ..default()
         },
         crate::retrocamera::RetroCamera,
         crate::pp::PostProcessSettings {
-            pixel_resolution: Vec2::new(240.0, 160.0),
-            edge_intensity: 0.5,
-            color_levels: 4.0,
-            cel_levels: 100.0,
-            scanline_intensity: 2.5,
-            contrast: 1.0,
-            saturation: 0.7,
-            window_size: Vec2::new(240.0, 160.0), // Should match pixel_resolution
-            dithering_strength: 0.75,
-            edge_threshold: 0.05,
-            color_snap_strength: 0.5,
-            edge_denoise: 0.5,
-            ..Default::default()
+            edge_denoise: 0.0,
+            edge_intensity: 0.5, // Intensità dei bordi (0.0-1.0)
+            color_levels: 8.0,   // Non usato in grayscale, ma mantenuto per compatibilità
+            cel_levels: 0.0,     // 0 = usa palette, >1 = cel shading (es. 3.0 per 3 livelli)
+            contrast: 1.2,           // Contrasto (1.0 = normale, >1.0 = più contrasto)
+            saturation: 0.0,         // Non usato in grayscale
+            scanline_intensity: 0.3, // Effetto scanlines CRT (0.0-1.0)
+            _pad1: 0.0,
+
+            window_size: Vec2::new(1920.0, 1080.0),
+            _pad2: Vec2::ZERO,
+
+            dithering_strength: 0.1,  // Dithering per texture (0.0-1.0)
+            edge_threshold: 0.1,      // Threshold per edge detection (0.0-1.0)
+            color_snap_strength: 0.5, // Rende i colori più netti (0.0-1.0)
+            _pad3: 0.0,
+
+            palette: [Vec4::ZERO; 8], // Non usato in questo shader
+            color_count: 8,
         },
-        //crate::jump_flood::OutlineSettings::new()
-        //    .with_thickness(1.5)
-        //    .with_color(Vec4::new(0.0, 0.0, 0.0, 1.0)) // Outline nero
-        //    .with_threshold(0.5),
-        //crate::simple_outline::SimpleOutlineSettings::new()
-        //    .with_thickness(2.0)
-        //    .with_color(Vec4::new(0.0, 0.0, 0.0, 1.0))
-        //    .with_threshold(0.1)
-        //    .with_intensity(1.0),
     ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};

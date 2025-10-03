@@ -41,7 +41,6 @@ fn setup_third_person_controller(
                 Camera3d::default(),
                 Transform::from_xyz(0.0, 2.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y),
                 crate::pp::PostProcessSettings {
-                    pixel_resolution: Vec2::new(240.0, 160.0), // Risoluzione pixel art
                     edge_intensity: 0.5,                       // Intensità bordi
                     color_levels: 4.0,                         // Livelli colore (4-16)
                     cel_levels: 100.0,                         // Livelli cel shading (2-8)

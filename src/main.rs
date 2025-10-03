@@ -1,5 +1,8 @@
 mod pp;
+mod cursor;
+mod assets;
 //mod jump_flood;
+mod transform;
 mod chess;
 use bevy::color::palettes::css::*;
 mod camera;
@@ -10,7 +13,6 @@ mod pastel;
 mod retrocamera;
 mod simple_outline;
 mod ui;
-use bevy::color::palettes::css::*;
 use bevy::image::Image;
 use bevy::image::*;
 use bevy::pbr::CascadeShadowConfigBuilder;
@@ -19,64 +21,32 @@ use bevy::remote::http::RemoteHttpPlugin;
 use bevy::remote::RemotePlugin;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::scene;
 use bevy::scene::SceneInstanceReady;
-use bevy::{image, scene};
-use bevy_mod_imgui::prelude::*;
 use bevy_mod_outline::{
     AsyncSceneInheritOutline, AutoGenerateOutlineNormalsPlugin, OutlinePlugin, OutlineVolume,
 };
 use bevy_rapier3d::prelude::*;
-use bevy_rapier3d::prelude::*;
-use imgui;
-use std::f32::consts::{PI, TAU};
-use std::fs::{self, DirEntry};
-use std::path::Path;
+use std::f32::consts::PI;
 mod board;
 mod outline;
-#[derive(Resource)]
-struct ImguiState {
-    demo_window_open: bool,
-}
-#[derive(Component)]
-struct Alive;
-#[derive(Component)]
-struct AssetName(String);
-#[derive(Component)]
-struct GameAsset {
-    pub model_path: String,
-    pub selected: bool,
-    pub thumbnail_handle: Option<Handle<Image>>,
-    pub texture_id: Option<imgui::TextureId>,
-}
-#[derive(Resource)]
-struct Cursor {
-    cursor_position: Vec3,
-}
 
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(BLUE.into()))
-        .insert_resource(ImguiState {
-            demo_window_open: true,
-        })
         .add_plugins(DefaultPlugins)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         //.add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(bevy_mod_imgui::ImguiPlugin::default())
         .add_plugins(retrocamera::RetroRenderPlugin {
-            width: 240,
-            height: 160,
+            width: 320,
+            height: 180,
         })
         .add_plugins(outline::OutlinePlugin)
         .add_systems(Startup, setup)
-        .add_systems(Startup, setup_game_assets)
+        .add_systems(Startup, assets::setup_game_assets)
         .add_systems(Startup, setup_physics)
         .add_systems(Startup, spawn_character)
-        .add_systems(Update, imgui_ui)
-        .add_systems(Update, calc_cursor_pos)
-        .add_systems(Update, draw_cursor.after(calc_cursor_pos))
-        .add_systems(Update, spawn_asset.after(calc_cursor_pos))
-        .add_systems(Update, alive_entities_ui)
         .add_plugins(ui::UiPlugin)
         .add_systems(
             Update,
@@ -85,11 +55,18 @@ fn main() {
         .add_plugins(RapierPickingPlugin)
         .add_systems(Startup, camera::spawn_camera)
         //.add_plugins(jump_flood::JumpFloodOutlinePlugin)
-        //.add_plugins(pp::PostProcessPlugin)
+        .add_plugins(pp::PostProcessPlugin)
         .add_plugins(RemotePlugin::default())
+        .add_plugins(
+            assets::AssetsPlugin
+        )
         .add_plugins(RemoteHttpPlugin::default())
         .add_plugins(chess::ChessPlugin)
         .add_plugins((OutlinePlugin, AutoGenerateOutlineNormalsPlugin::default()))
+        .add_plugins(transform::TransformGizmoPlugin)
+        .add_plugins(cursor::CursorPluginRetro)
+    .add_plugins(MeshPickingPlugin)
+
         .run();
 }
 
@@ -97,7 +74,6 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
 ) {
     let size = Extent3d {
         width: 280,
@@ -117,12 +93,6 @@ fn setup(
     // Filtro nearest-neighbor per mantenere il pixelato:
     image.sampler = ImageSampler::nearest(); // filtro mag/min = Nearest:contentReference[oaicite:3]{index=3}
                                              //let texture_handle = asset_server.load("textures/grass_ground.png");
-    let material_handle = materials.add(StandardMaterial {
-        alpha_mode: AlphaMode::Blend,
-        unlit: false,
-        ..default()
-    });
-
     let mut mesh = Mesh::from(Plane3d::default().mesh().size(1000.0, 1000.0));
     let repeat_factor = 50.0;
     if let Some(uvs) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
@@ -163,143 +133,8 @@ fn setup(
         },
         CascadeShadowConfigBuilder { ..default() }.build(),
     ));
-    commands.insert_resource(Cursor {
-        cursor_position: Vec3::ZERO,
-    });
 }
 
-fn imgui_ui(
-    mut context: NonSendMut<ImguiContext>,
-    mut state: ResMut<ImguiState>,
-    mut query: Query<(Entity, &AssetName, &mut GameAsset)>,
-    images: Res<Assets<Image>>,
-) {
-    let ui = context.ui();
-    let sidebar_window = ui.window("Asset Browser");
-    sidebar_window
-        .size([600.0, 900.0], imgui::Condition::FirstUseEver)
-        .position([0.0, 0.0], imgui::Condition::FirstUseEver)
-        .collapsible(false)
-        .resizable(false)
-        .movable(false)
-        .build(|| {
-            ui.text("Choose assets");
-            ui.separator();
-
-            let mut clicked_entity = None;
-            let grid_columns = 2;
-            let thumbnail_size = [200.0, 200.0];
-            let mut column_count = 0;
-
-            // Grid layout for thumbnails
-            for (e, name, game_asset) in query.iter() {
-                if column_count % grid_columns == 0 && column_count > 0 {
-                    // Start new row
-                }
-
-                // Create a group for each asset item
-                ui.group(|| {
-                    // Thumbnail placeholder or actual thumbnail
-                    if let Some(thumbnail_handle) = &game_asset.thumbnail_handle {
-                        if let Some(_image) = images.get(thumbnail_handle) {
-                            // For now, just show a colored button as placeholder
-                            // ImGui-rs doesn't have direct image support without additional setup
-                            let button_color = if game_asset.selected {
-                                [0.2, 0.8, 0.2, 1.0] // Green if selected
-                            } else {
-                                [0.4, 0.4, 0.4, 1.0] // Gray if not selected
-                            };
-
-                            let clicked = ui.button_with_size(
-                                &format!("##thumb_{}", e.index()),
-                                thumbnail_size,
-                            );
-
-                            if clicked {
-                                clicked_entity = Some(e);
-                            }
-                        } else {
-                            // Loading placeholder
-                            ui.button_with_size(
-                                &format!("Loading...##thumb_{}", e.index()),
-                                thumbnail_size,
-                            );
-                        }
-                    } else {
-                        // No thumbnail - show placeholder
-                        let clicked = ui.button_with_size(
-                            &format!("No Image##thumb_{}", e.index()),
-                            thumbnail_size,
-                        );
-                        if clicked {
-                            clicked_entity = Some(e);
-                        }
-                    }
-
-                    // Asset name below thumbnail
-                    ui.text_wrapped(&name.0);
-                });
-
-                // Same line for grid layout
-                if column_count % grid_columns < grid_columns - 1 {
-                    ui.same_line();
-                }
-                column_count += 1;
-            }
-
-            // Handle selection
-            if let Some(selected_entity) = clicked_entity {
-                for (e, _name, mut game_asset) in query.iter_mut() {
-                    game_asset.selected = e == selected_entity;
-                }
-            }
-
-            ui.separator();
-            ui.text("Selected asset details:");
-
-            // Show details for selected asset
-            for (_e, name, game_asset) in query.iter() {
-                if game_asset.selected {
-                    ui.text(format!("Name: {}", name.0));
-                    ui.text(format!("Path: {}", game_asset.model_path.to_string()));
-                    break;
-                }
-            }
-        });
-
-    if state.demo_window_open {
-        ui.show_demo_window(&mut state.demo_window_open);
-    }
-}
-fn alive_entities_ui(mut context: NonSendMut<ImguiContext>, query: Query<Entity, With<Alive>>) {
-    let ui = context.ui();
-    let window = ui.window("Alive entities");
-    window
-        .position([1000., 1000.0], imgui::Condition::FirstUseEver)
-        .size([300.0, 300.0], imgui::Condition::FirstUseEver)
-        .build(|| {
-            for e in query.iter() {
-                ui.text(format!("Alive Entities: {}", e));
-            }
-        });
-}
-fn draw_cursor(
-    cursor: Res<Cursor>,
-    ground: Single<&GlobalTransform, With<ground::Ground>>,
-    mut gizmos: Gizmos,
-    buttons: Res<ButtonInput<MouseButton>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        gizmos.circle(
-            Isometry3d::new(
-                cursor.cursor_position + ground.up() * 0.01,
-                Quat::from_rotation_arc(Vec3::Z, ground.up().as_vec3()),
-            ),
-            0.2,
-            Color::WHITE,
-        );
-    }
-}
 fn setup_physics(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -314,9 +149,9 @@ fn setup_physics(
     let ball_material = materials.add(StandardMaterial {
         base_color: GREEN.into(), // Green color
         alpha_mode: AlphaMode::Opaque,
-        metallic: 0.0,
+        metallic: 10.0,
         perceptual_roughness: 1.0,
-        reflectance: 0.0,
+        reflectance: 1.0,
         ..default()
     });
     /* Create the bouncing ball. */
@@ -328,183 +163,11 @@ fn setup_physics(
             Mesh3d(meshes.add(Sphere::new(0.5))),
             MeshMaterial3d(ball_material),
             Transform::from_xyz(0.0, 4.0, 0.0),
+            transform::Pickable,
         ))
         .insert(outline::Outlined);
 }
 
-fn spawn_asset(
-    mut commands: Commands,
-    buttons: Res<ButtonInput<MouseButton>>,
-    query: Query<(Entity, &GameAsset)>,
-    cursor: Res<Cursor>,
-    asset_server: Res<AssetServer>,
-) {
-    if !buttons.just_pressed(MouseButton::Right) {
-        return;
-    }
-
-    for (_, game_asset) in query.iter() {
-        if game_asset.selected {
-            let scene_handle = asset_server
-                .load(GltfAssetLabel::Scene(0).from_asset(game_asset.model_path.clone()));
-            let asset = commands
-                .spawn((
-                    SceneRoot(scene_handle),
-                    Transform::from_xyz(
-                        cursor.cursor_position.x,
-                        cursor.cursor_position.y,
-                        cursor.cursor_position.z,
-                    ),
-                    RigidBody::Fixed,
-                    AsyncSceneInheritOutline::default(),
-                    OutlineVolume {
-                        visible: true,
-                        width: 2.0,
-                        colour: BLACK.into(),
-                    },
-                    Alive,
-                ))
-                .id();
-            // Spawn collider as child, offset by half_height on Y
-            commands.entity(asset).with_children(|parent| {
-                parent.spawn((
-                    Collider::cuboid(0.25, 0.8, 0.25),
-                    Transform::from_xyz(0.0, 0.8, 0.0),
-                ));
-            });
-            break;
-        };
-    }
-}
-
-fn calc_cursor_pos(
-    retro_camera_query: Query<(&Camera, &GlobalTransform), With<retrocamera::RetroCamera>>,
-    sprite_query: Query<&Transform, With<Sprite>>,
-    ground: Single<&GlobalTransform, With<ground::Ground>>,
-    windows: Query<&Window>,
-    mut cursor: ResMut<Cursor>,
-    target: Res<retrocamera::RetroRenderTarget>,
-) {
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor_position) = window.cursor_position() else {
-        return;
-    };
-
-    let Ok((retro_camera, retro_transform)) = retro_camera_query.get_single() else {
-        return;
-    };
-
-    let Ok(sprite_transform) = sprite_query.get_single() else {
-        return;
-    };
-
-    let window_size = Vec2::new(window.width(), window.height());
-    let texture_size = Vec2::new(target.width as f32, target.height as f32);
-
-    // Get the actual scale from the sprite transform
-    let scale = sprite_transform.scale.x; // Assuming uniform scaling
-    let sprite_size = texture_size * scale;
-
-    // Calculate sprite position on screen (centered)
-    let sprite_offset = (window_size - sprite_size) * 0.5;
-
-    // Convert screen cursor to sprite-local coordinates
-    let sprite_local = cursor_position - sprite_offset;
-
-    // Check if cursor is within sprite bounds
-    if sprite_local.x < 0.0
-        || sprite_local.y < 0.0
-        || sprite_local.x > sprite_size.x
-        || sprite_local.y > sprite_size.y
-    {
-        return; // Cursor is outside the sprite
-    }
-
-    // Convert to texture coordinates (0 to texture_size)
-    let texture_coords = sprite_local / scale;
-
-    // Use the retro camera to cast the ray
-    let Ok(ray) = retro_camera.viewport_to_world(retro_transform, texture_coords) else {
-        return;
-    };
-
-    let Some(distance) =
-        ray.intersect_plane(ground.translation(), InfinitePlane3d::new(ground.up()))
-    else {
-        return;
-    };
-
-    cursor.cursor_position = ray.get_point(distance);
-}
-
-fn setup_game_assets(mut commands: Commands) {
-    let assets_dir = Path::new("assets");
-
-    if let Ok(entries) = fs::read_dir(assets_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(extension) = path.extension() {
-                    if extension == "glb" || extension == "gltf" {
-                        if let Some(relative_path) = path.strip_prefix("assets").ok() {
-                            commands.spawn((
-                                GameAsset {
-                                    model_path: relative_path.to_string_lossy().to_string(),
-                                    selected: false,
-                                    thumbnail_handle: None,
-                                    texture_id: None,
-                                },
-                                AssetName(
-                                    path.file_stem()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string(),
-                                ),
-                            ));
-                        }
-                    }
-                }
-            } else if path.is_dir() {
-                walk_subdirs(&mut commands, &path);
-            }
-        }
-    }
-}
-
-fn walk_subdirs(commands: &mut Commands, dir: &Path) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Some(extension) = path.extension() {
-                    if extension == "glb" || extension == "gltf" {
-                        if let Some(relative_path) = path.strip_prefix("assets").ok() {
-                            commands.spawn((
-                                GameAsset {
-                                    model_path: relative_path.to_string_lossy().to_string(),
-                                    selected: false,
-                                    thumbnail_handle: None,
-                                    texture_id: None,
-                                },
-                                AssetName(
-                                    path.file_stem()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string(),
-                                ),
-                            ));
-                        }
-                    }
-                }
-            } else if path.is_dir() {
-                walk_subdirs(commands, &path);
-            }
-        }
-    }
-}
 
 /// Componenti per identificare il personaggio
 #[derive(Component)]
@@ -539,7 +202,6 @@ fn spawn_character(
             SceneRoot(scene_handle.clone()),
             Transform::from_xyz(0.0, 3.0, 5.0),
             Character,
-            AssetName("Character Man".to_string()),
             RigidBody::Dynamic,
             LockedAxes::ROTATION_LOCKED_X,
             Friction::coefficient(1.0),
@@ -649,7 +311,7 @@ fn setup_character_skeleton_and_ik(
         LockedAxes::ROTATION_LOCKED,
         Restitution::coefficient(0.0),
         Friction::coefficient(1.0),
-        Alive,
+        assets::Alive,
         RapierPickable,
     ));
 

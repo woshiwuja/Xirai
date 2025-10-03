@@ -1,0 +1,562 @@
+use bevy::prelude::*;
+use bevy_mod_imgui::prelude::*;
+
+// ============================================================================
+// COMPONENTS & RESOURCES
+// ============================================================================
+
+#[derive(Component)]
+pub struct Selected;
+
+#[derive(Component)]
+pub struct Pickable;
+
+#[derive(Resource, Default)]
+pub struct TransformGizmoState {
+    pub selected_entity: Option<Entity>,
+    pub mode: TransformMode,
+    pub is_dragging: bool,
+    pub drag_start_pos: Vec2,
+    pub initial_transform: Transform,
+}
+
+#[derive(Default, PartialEq, Clone, Copy)]
+pub enum TransformMode {
+    #[default]
+    Translate,
+    Rotate,
+    Scale,
+}
+
+// ============================================================================
+// MANUAL PICKING SYSTEM (per render-to-texture)
+// ============================================================================
+
+fn handle_selection(
+    mut commands: Commands,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    retro_camera_query: Query<(&Camera, &GlobalTransform), With<crate::retrocamera::RetroCamera>>,
+    sprite_query: Query<&Transform, With<Sprite>>,
+    pickable_query: Query<(Entity, &GlobalTransform, Option<&Mesh3d>), With<Pickable>>,
+    selected_query: Query<Entity, With<Selected>>,
+    target: Res<crate::retrocamera::RetroRenderTarget>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    // Solo al click sinistro
+    if !mouse_button.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+    let Ok((retro_camera, retro_transform)) = retro_camera_query.single() else {
+        return;
+    };
+    let Ok(sprite_transform) = sprite_query.single() else {
+        return;
+    };
+
+    // Converti cursor position da window a texture coordinates (come nel tuo codice)
+    let window_size = Vec2::new(window.width(), window.height());
+    let texture_size = Vec2::new(target.width as f32, target.height as f32);
+    let scale = sprite_transform.scale.x;
+    let sprite_size = texture_size * scale;
+    let sprite_offset = (window_size - sprite_size) * 0.5;
+    let sprite_local = cursor_position - sprite_offset;
+
+    // Check bounds
+    if sprite_local.x < 0.0
+        || sprite_local.y < 0.0
+        || sprite_local.x > sprite_size.x
+        || sprite_local.y > sprite_size.y
+    {
+        return;
+    }
+
+    let texture_coords = sprite_local / scale;
+
+    // Crea il ray dalla camera 3D
+    let Ok(ray) = retro_camera.viewport_to_world(retro_transform, texture_coords) else {
+        return;
+    };
+
+    // Trova l'entità più vicina che interseca il ray
+    let mut closest_entity = None;
+    let mut closest_distance = f32::MAX;
+
+    for (entity, global_transform, mesh_handle) in pickable_query.iter() {
+        // Metodo semplice: check distanza dal centro dell'oggetto
+        // Per picking più preciso, dovresti fare ray-mesh intersection
+        let entity_pos = global_transform.translation();
+        
+        // Calcola il punto più vicino sul ray all'entità
+        let ray_to_entity = entity_pos - ray.origin;
+        let projection = ray_to_entity.dot(*ray.direction);
+        
+        if projection < 0.0 {
+            continue; // Dietro la camera
+        }
+        
+        let closest_point = ray.origin + *ray.direction * projection;
+        let distance_to_ray = (entity_pos - closest_point).length();
+        
+        // Usa un raggio di picking (es. 0.5 unità)
+        let pick_radius = 1.0;
+        
+        if distance_to_ray < pick_radius && projection < closest_distance {
+            closest_distance = projection;
+            closest_entity = Some(entity);
+        }
+    }
+
+    // Seleziona l'entità trovata
+    if let Some(entity) = closest_entity {
+        // Rimuovi selezione precedente
+        for sel in selected_query.iter() {
+            commands.entity(sel).remove::<Selected>();
+        }
+
+        // Seleziona nuovo
+        commands.entity(entity).insert(Selected);
+        gizmo_state.selected_entity = Some(entity);
+
+        info!("Selezionato: {:?}", entity);
+    }
+}
+
+fn handle_deselection(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    selected_query: Query<Entity, With<Selected>>,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        for entity in selected_query.iter() {
+            commands.entity(entity).remove::<Selected>();
+        }
+        gizmo_state.selected_entity = None;
+        info!("Deselezione");
+    }
+}
+
+// ============================================================================
+// TRANSFORM SYSTEMS
+// ============================================================================
+
+fn handle_transform(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+    windows: Query<&Window>,
+    mut selected_query: Query<&mut Transform, With<Selected>>,
+) {
+    // Cambio modalità con i tasti
+    if keyboard.just_pressed(KeyCode::KeyG) {
+        gizmo_state.mode = TransformMode::Translate;
+        info!("Modalità: Translate");
+    }
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        gizmo_state.mode = TransformMode::Rotate;
+        info!("Modalità: Rotate");
+    }
+    if keyboard.just_pressed(KeyCode::KeyS) {
+        gizmo_state.mode = TransformMode::Scale;
+        info!("Modalità: Scale");
+    }
+
+    if gizmo_state.selected_entity.is_none() {
+        return;
+    }
+
+    let Ok(mut transform) = selected_query.get_single_mut() else {
+        return;
+    };
+
+    // Inizia drag
+    if mouse_button.just_pressed(MouseButton::Right) {
+        gizmo_state.is_dragging = true;
+        gizmo_state.initial_transform = *transform;
+
+        if let Ok(window) = windows.single() {
+            if let Some(cursor_pos) = window.cursor_position() {
+                gizmo_state.drag_start_pos = cursor_pos;
+            }
+        }
+    }
+
+    // Termina drag
+    if mouse_button.just_released(MouseButton::Right) {
+        gizmo_state.is_dragging = false;
+    }
+
+    // Applica trasformazione durante drag
+    if gizmo_state.is_dragging {
+        if let Ok(window) = windows.single() {
+            if let Some(cursor_pos) = window.cursor_position() {
+                let delta = cursor_pos - gizmo_state.drag_start_pos;
+
+                match gizmo_state.mode {
+                    TransformMode::Translate => {
+                        let speed = 0.01;
+                        transform.translation.x =
+                            gizmo_state.initial_transform.translation.x + delta.x * speed;
+                        transform.translation.z =
+                            gizmo_state.initial_transform.translation.z - delta.y * speed;
+                    }
+                    TransformMode::Rotate => {
+                        let speed = 0.01;
+                        transform.rotation = gizmo_state.initial_transform.rotation
+                            * Quat::from_rotation_y(delta.x * speed);
+                    }
+                    TransformMode::Scale => {
+                        let speed = 0.01;
+                        let scale_factor = 1.0 + delta.y * speed;
+                        transform.scale = gizmo_state.initial_transform.scale * scale_factor;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// ENTITY MANIPULATION SYSTEMS
+// ============================================================================
+
+fn handle_duplication(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    selected_query: Query<
+        (
+            Entity,
+            &Transform,
+            Option<&Mesh3d>,
+            Option<&MeshMaterial3d<StandardMaterial>>,
+        ),
+        With<Selected>,
+    >,
+) {
+    if keyboard.pressed(KeyCode::ShiftLeft) && keyboard.just_pressed(KeyCode::KeyD) {
+        for (entity, transform, mesh, material) in selected_query.iter() {
+            let mut new_transform = *transform;
+            new_transform.translation.x += 2.0;
+
+            let mut entity_commands = commands.spawn((new_transform, Pickable));
+
+            if let Some(mesh) = mesh {
+                entity_commands.insert(Mesh3d(mesh.0.clone()));
+            }
+            if let Some(material) = material {
+                entity_commands.insert(MeshMaterial3d(material.0.clone()));
+            }
+
+            info!("Duplicato: {:?}", entity);
+        }
+    }
+}
+
+fn handle_deletion(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    selected_query: Query<Entity, With<Selected>>,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+) {
+    if keyboard.just_pressed(KeyCode::Delete) || keyboard.just_pressed(KeyCode::KeyX) {
+        for entity in selected_query.iter() {
+            commands.entity(entity).despawn_recursive();
+            info!("Eliminato: {:?}", entity);
+        }
+        gizmo_state.selected_entity = None;
+    }
+}
+
+// ============================================================================
+// VISUAL FEEDBACK
+// ============================================================================
+
+fn draw_selection_outline(
+    mut gizmos: Gizmos,
+    selected_query: Query<&GlobalTransform, With<Selected>>,
+) {
+    for global_transform in selected_query.iter() {
+        let pos = global_transform.translation();
+
+        gizmos.cuboid(
+            Transform::from_translation(pos).with_scale(Vec3::splat(1.1)),
+            Color::srgb(1.0, 1.0, 0.0),
+        );
+
+        let size = 2.0;
+        gizmos.line(
+            pos,
+            pos + global_transform.right() * size,
+            Color::srgb(1.0, 0.0, 0.0),
+        );
+        gizmos.line(
+            pos,
+            pos + global_transform.up() * size,
+            Color::srgb(0.0, 1.0, 0.0),
+        );
+        gizmos.line(
+            pos,
+            pos + global_transform.forward() * size,
+            Color::srgb(0.0, 0.0, 1.0),
+        );
+    }
+}
+
+// ============================================================================
+// UI SYSTEMS
+// ============================================================================
+
+fn gizmo_controls_ui(
+    mut context: NonSendMut<ImguiContext>,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+    mut selected_query: Query<&mut Transform, With<Selected>>,
+) {
+    let ui = context.ui();
+    let window = ui.window("Transform Gizmo");
+
+    window
+        .position([900.0, 300.0], imgui::Condition::FirstUseEver)
+        .size([320.0, 500.0], imgui::Condition::FirstUseEver)
+        .build(|| {
+            ui.text("Transform Controls");
+            ui.separator();
+
+            if let Some(entity) = gizmo_state.selected_entity {
+                ui.text(format!("Selected: {:?}", entity));
+            } else {
+                ui.text_colored([0.7, 0.7, 0.7, 1.0], "No entity selected");
+            }
+
+            ui.separator();
+
+            if ui.collapsing_header("Transform Mode", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                let mut current_mode = gizmo_state.mode;
+
+                if ui.radio_button("Translate (G)", &mut current_mode, TransformMode::Translate) {
+                    gizmo_state.mode = TransformMode::Translate;
+                }
+                if ui.radio_button("Rotate (R)", &mut current_mode, TransformMode::Rotate) {
+                    gizmo_state.mode = TransformMode::Rotate;
+                }
+                if ui.radio_button("Scale (S)", &mut current_mode, TransformMode::Scale) {
+                    gizmo_state.mode = TransformMode::Scale;
+                }
+            }
+
+            if gizmo_state.selected_entity.is_some() {
+                if let Ok(mut transform) = selected_query.get_single_mut() {
+                    if ui.collapsing_header("Position", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                        let mut pos = [
+                            transform.translation.x,
+                            transform.translation.y,
+                            transform.translation.z,
+                        ];
+                        if ui.input_float3("Position", &mut pos).build() {
+                            transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
+                        }
+                        if ui.slider("PosX", 0.0, 100.0, &mut pos[0]) {
+                            transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
+                        }
+                        if ui.slider("PosY", 0.0, 100.0, &mut pos[1]) {
+                            transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
+                        }
+                        if ui.slider("PosZ", 0.0, 100.0, &mut pos[2]) {
+                            transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
+                        }
+                    }
+
+                    if ui.collapsing_header("Rotation", imgui::TreeNodeFlags::empty()) {
+                        let (mut x, mut y, mut z) = transform.rotation.to_euler(EulerRot::XYZ);
+                        x = x.to_degrees();
+                        y = y.to_degrees();
+                        z = z.to_degrees();
+
+                        let mut euler = [x, y, z];
+                        if ui.input_float3("Rotation (deg)", &mut euler).build() {
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                        if ui.slider("RotX", -180.0, 180.0, &mut euler[0]) {
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                        if ui.slider("RotY", -180.0, 180.0, &mut euler[1]) {
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                        if ui.slider("RotZ", -180.0, 180.0, &mut euler[2]) {
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                    }
+
+                    if ui.collapsing_header("Scale", imgui::TreeNodeFlags::empty()) {
+                        let mut scale = [transform.scale.x, transform.scale.y, transform.scale.z];
+                        if ui.input_float3("Scale", &mut scale).build() {
+                            transform.scale = Vec3::new(scale[0], scale[1], scale[2]);
+                        }
+
+                        let mut uniform_scale = transform.scale.x;
+                        if ui.slider("Uniform Scale", 0.1, 5.0, &mut uniform_scale) {
+                            transform.scale = Vec3::splat(uniform_scale);
+                        }
+                    }
+
+                    ui.separator();
+
+                    if ui.button("Reset Position") {
+                        transform.translation = Vec3::ZERO;
+                    }
+                    ui.same_line();
+                    if ui.button("Reset Rotation") {
+                        transform.rotation = Quat::IDENTITY;
+                    }
+
+                    if ui.button("Reset Scale") {
+                        transform.scale = Vec3::ONE;
+                    }
+                    ui.same_line();
+                    if ui.button("Reset All") {
+                        *transform = Transform::default();
+                    }
+                }
+            }
+
+            ui.separator();
+
+            if ui.collapsing_header("Keyboard Shortcuts", imgui::TreeNodeFlags::empty()) {
+                ui.bullet_text("Left Click: Select");
+                ui.bullet_text("Right Click + Drag: Transform");
+                ui.bullet_text("G: Translate mode");
+                ui.bullet_text("R: Rotate mode");
+                ui.bullet_text("S: Scale mode");
+                ui.bullet_text("Shift+D: Duplicate");
+                ui.bullet_text("X/Delete: Delete");
+                ui.bullet_text("ESC: Deselect");
+            }
+        });
+}
+
+fn entity_list_ui(
+    mut context: NonSendMut<ImguiContext>,
+    mut commands: Commands,
+    pickable_query: Query<(Entity, Option<&Name>, &Transform), With<Pickable>>,
+    selected_query: Query<Entity, With<Selected>>,
+    mut gizmo_state: ResMut<TransformGizmoState>,
+) {
+    let ui = context.ui();
+    let window = ui.window("Entity List");
+
+    window
+        .position([10.0, 810.0], imgui::Condition::FirstUseEver)
+        .size([320.0, 250.0], imgui::Condition::FirstUseEver)
+        .build(|| {
+            ui.text(format!(
+                "Pickable Entities: {}",
+                pickable_query.iter().count()
+            ));
+            ui.separator();
+
+            for (entity, name, transform) in pickable_query.iter() {
+                let is_selected = selected_query.contains(entity);
+
+                let label = if let Some(name) = name {
+                    format!("{} ({:?})", name.as_str(), entity)
+                } else {
+                    format!("Entity {:?}", entity)
+                };
+
+                if is_selected {
+                    ui.text_colored([1.0, 1.0, 0.0, 1.0], &label);
+                } else {
+                    ui.text(&label);
+                }
+
+                ui.same_line();
+
+                let select_label = format!("Select###{:?}", entity);
+                if ui.small_button(&select_label) {
+                    for selected in selected_query.iter() {
+                        commands.entity(selected).remove::<Selected>();
+                    }
+
+                    commands.entity(entity).insert(Selected);
+                    gizmo_state.selected_entity = Some(entity);
+                }
+
+                ui.same_line();
+
+                let delete_label = format!("X###{:?}", entity);
+                if ui.small_button(&delete_label) {
+                    commands.entity(entity).despawn_recursive();
+                    if gizmo_state.selected_entity == Some(entity) {
+                        gizmo_state.selected_entity = None;
+                    }
+                }
+
+                ui.text_disabled(format!(
+                    "  Pos: [{:.1}, {:.1}, {:.1}]",
+                    transform.translation.x, transform.translation.y, transform.translation.z,
+                ));
+            }
+        });
+}
+
+// ============================================================================
+// PLUGIN
+// ============================================================================
+
+pub struct TransformGizmoPlugin;
+impl Plugin for TransformGizmoPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<TransformGizmoState>()
+            .add_systems(Update, handle_selection)
+            .add_systems(Update, handle_transform)
+            .add_systems(Update, handle_deselection)
+            .add_systems(Update, handle_duplication)
+            .add_systems(Update, handle_deletion)
+            .add_systems(Update, draw_selection_outline)
+            .add_systems(Update, gizmo_controls_ui)
+            .add_systems(Update, entity_list_ui);
+    }
+}
+
+// ============================================================================
+// HELPER TRAIT
+// ============================================================================
+
+pub trait PickableExt {
+    fn with_pickable(self) -> Self;
+}
+
+impl PickableExt for EntityCommands<'_> {
+    fn with_pickable(mut self) -> Self {
+        self.insert(Pickable);
+        self
+    }
+}
