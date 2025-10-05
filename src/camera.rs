@@ -109,9 +109,10 @@ pub fn spawn_camera(mut commands: Commands) {
             color_snap_strength: 0.5, // Rende i colori più netti (0.0-1.0)
             _pad3: 0.0,
 
-            palette: [Vec4::ZERO; 8], // Non usato in questo shader
+            palette: [Vec4::ZERO; 32], // Non usato in questo shader
             color_count: 8,
         },
+        MeshPickingCamera,
     ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};

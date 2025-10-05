@@ -47,11 +47,7 @@ fn setup_board(
                     Mesh3d(meshes.add(mesh.clone())),
                     Transform::from_xyz(x as f32 * tile_size, 0.1, y as f32 * tile_size),
                     Size { w: 1, h: 1 },
-                    OutlineVolume{
-                        colour:BLACK.into(),
-                        visible:true,
-                        width:1.0,
-                    }
+                    crate::outline::Outlined,
                 ))
                 .id();
             if (x + y) % 2 == 0 {

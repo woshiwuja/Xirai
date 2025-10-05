@@ -24,13 +24,20 @@ use bevy::{
 };
 const SHADER_ASSET_PATH: &str = "shaders/pixel_art.wgsl";
 
+fn preload_shader(asset_server: Res<AssetServer>) {
+    // Preload the shader to ensure it's available when the pipeline is created
+    let _shader_handle: Handle<Shader> = asset_server.load(SHADER_ASSET_PATH);
+    info!("Preloading post-process shader: {}", SHADER_ASSET_PATH);
+}
+
 pub struct PostProcessPlugin;
 impl Plugin for PostProcessPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             ExtractComponentPlugin::<PostProcessSettings>::default(),
             UniformComponentPlugin::<PostProcessSettings>::default(),
-        ));
+        ))
+        .add_systems(Startup, preload_shader);
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -85,6 +92,7 @@ impl ViewNode for PostProcessNode {
 
         let Some(pipeline) = pipeline_cache.get_render_pipeline(post_process_pipeline.pipeline_id)
         else {
+            // Pipeline not ready yet (shader still loading)
             return Ok(());
         };
 
@@ -149,7 +157,8 @@ impl FromWorld for PostProcessPipeline {
         );
 
         let sampler = render_device.create_sampler(&SamplerDescriptor::default());
-        let shader = world.load_asset(SHADER_ASSET_PATH);
+        let asset_server = world.resource::<AssetServer>();
+        let shader = asset_server.load(SHADER_ASSET_PATH);
 
         // FIX: Usa il formato HDR della ViewTarget invece di bevy_default()
         let view_target_format = ViewTarget::TEXTURE_FORMAT_HDR;
@@ -205,7 +214,7 @@ pub struct PostProcessSettings {
     pub color_snap_strength: f32,
     pub _pad3: f32,
     
-    pub palette: [Vec4; 8],
+    pub palette: [Vec4; 32],
     pub color_count: u32,
 }
 

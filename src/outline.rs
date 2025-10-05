@@ -3,13 +3,14 @@ use bevy::prelude::*;
 use bevy::render::mesh::skinning::SkinnedMesh;
 use bevy::render::render_resource::Face;
 use bevy::scene::SceneInstanceReady;
+
 #[derive(Component)]
 pub struct Outlined;
 
 pub struct OutlinePlugin;
 impl Plugin for OutlinePlugin{
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, generate_outlines);
+        app.add_systems(Update, generate_outlines_for_assets);
     }
 }
 
@@ -42,66 +43,20 @@ fn generate_outlines(
         });
     }
 }
-//pub fn generate_outlines_for_gltf(
-//    trigger: Trigger<SceneInstanceReady>,
-//    mut commands: Commands,
-//    mesh_query: Query<&Mesh3d>,
-//    transform_query: Query<&GlobalTransform>,
-//    skinned_query: Query<&SkinnedMesh>,
-//    children: Query<&Children>,
-//    mut materials: ResMut<Assets<StandardMaterial>>,
-//) {
-//    let outline_mat = materials.add(StandardMaterial {
-//        base_color: Color::BLACK,
-//        unlit: true,
-//        alpha_mode: AlphaMode::Opaque,
-//        cull_mode: Some(Face::Front),
-//        ..default()
-//    });
-//
-//    let root_entity = trigger.target();
-//
-//    for entity in children.iter_descendants(root_entity) {
-//        if let Ok(mesh) = mesh_query.get(entity) {
-//            if let Ok(global_transform) = transform_query.get(entity) {
-//                let mut outline_entity = commands.spawn((
-//                    Mesh3d(mesh.0.clone()),
-//                    MeshMaterial3d(outline_mat.clone()),
-//                    Transform {
-//                        translation: global_transform.translation(),
-//                        rotation: global_transform.rotation(),
-//                        scale: global_transform.scale() * 1.05,
-//                    },
-//                    Visibility::default(),
-//                ));
-//
-//                // Se la mesh originale è skinned, copia anche quello
-//                if let Ok(skinned) = skinned_query.get(entity) {
-//                    outline_entity.insert(skinned.clone());
-//                }
-//            }
-//        }
-//    }
-//}
-
 use bevy_mod_outline::{OutlineVolume, AsyncSceneInheritOutline};
 
-pub fn generate_outlines_for_gltf(
-    trigger: Trigger<SceneInstanceReady>,
+pub fn generate_outlines_for_assets(
     mut commands: Commands,
+    query: Query<(Entity,&Mesh3d, &crate::assets::GameAsset),Added<Outline>>
 ) {
-    // L'entity principale della scena GLTF
-    let root_entity = trigger.target();
-    
-    // Aggiungi l'outline alla root entity della scena
-    // AsyncSceneInheritOutline propaga automaticamente l'outline 
-    // a tutte le mesh figlie, incluse quelle skinned
-    commands.entity(root_entity).insert((
+    for (e,_,_) in query.iter(){
+    commands.entity(e).insert((
         OutlineVolume {
             visible: true,
-            width: 3.0,
+            width: 4.0,
             colour: Color::BLACK,
         },
         AsyncSceneInheritOutline::default(),
     ));
+    }
 }

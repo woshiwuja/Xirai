@@ -1,5 +1,7 @@
+use bevy::picking::prelude::*;
 use bevy::prelude::*;
 use bevy_mod_imgui::prelude::*;
+use bevy_rapier3d::prelude::*;
 
 // ============================================================================
 // COMPONENTS & RESOURCES
@@ -7,9 +9,6 @@ use bevy_mod_imgui::prelude::*;
 
 #[derive(Component)]
 pub struct Selected;
-
-#[derive(Component)]
-pub struct Pickable;
 
 #[derive(Resource, Default)]
 pub struct TransformGizmoState {
@@ -29,104 +28,32 @@ pub enum TransformMode {
 }
 
 // ============================================================================
-// MANUAL PICKING SYSTEM (per render-to-texture)
+// PICKING & SELECTION SYSTEMS (Bevy 0.16 integrated picking)
 // ============================================================================
 
 fn handle_selection(
     mut commands: Commands,
     mut gizmo_state: ResMut<TransformGizmoState>,
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
-    retro_camera_query: Query<(&Camera, &GlobalTransform), With<crate::retrocamera::RetroCamera>>,
-    sprite_query: Query<&Transform, With<Sprite>>,
-    pickable_query: Query<(Entity, &GlobalTransform, Option<&Mesh3d>), With<Pickable>>,
+    mut click_events: EventReader<Pointer<Click>>,
+    pickable_query: Query<Entity, With<Pickable>>,
     selected_query: Query<Entity, With<Selected>>,
-    target: Res<crate::retrocamera::RetroRenderTarget>,
-    meshes: Res<Assets<Mesh>>,
 ) {
-    // Solo al click sinistro
-    if !mouse_button.just_pressed(MouseButton::Left) {
-        return;
-    }
+    for click in click_events.read() {
+        let entity = click.target;
 
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor_position) = window.cursor_position() else {
-        return;
-    };
-    let Ok((retro_camera, retro_transform)) = retro_camera_query.single() else {
-        return;
-    };
-    let Ok(sprite_transform) = sprite_query.single() else {
-        return;
-    };
+        // Se il target è pickable
+        if pickable_query.get(entity).is_ok() {
+            // Rimuovi selezione precedente
+            for sel in selected_query.iter() {
+                commands.entity(sel).remove::<Selected>();
+            }
 
-    // Converti cursor position da window a texture coordinates (come nel tuo codice)
-    let window_size = Vec2::new(window.width(), window.height());
-    let texture_size = Vec2::new(target.width as f32, target.height as f32);
-    let scale = sprite_transform.scale.x;
-    let sprite_size = texture_size * scale;
-    let sprite_offset = (window_size - sprite_size) * 0.5;
-    let sprite_local = cursor_position - sprite_offset;
+            // Seleziona nuovo
+            commands.entity(entity).insert(Selected);
+            gizmo_state.selected_entity = Some(entity);
 
-    // Check bounds
-    if sprite_local.x < 0.0
-        || sprite_local.y < 0.0
-        || sprite_local.x > sprite_size.x
-        || sprite_local.y > sprite_size.y
-    {
-        return;
-    }
-
-    let texture_coords = sprite_local / scale;
-
-    // Crea il ray dalla camera 3D
-    let Ok(ray) = retro_camera.viewport_to_world(retro_transform, texture_coords) else {
-        return;
-    };
-
-    // Trova l'entità più vicina che interseca il ray
-    let mut closest_entity = None;
-    let mut closest_distance = f32::MAX;
-
-    for (entity, global_transform, mesh_handle) in pickable_query.iter() {
-        // Metodo semplice: check distanza dal centro dell'oggetto
-        // Per picking più preciso, dovresti fare ray-mesh intersection
-        let entity_pos = global_transform.translation();
-        
-        // Calcola il punto più vicino sul ray all'entità
-        let ray_to_entity = entity_pos - ray.origin;
-        let projection = ray_to_entity.dot(*ray.direction);
-        
-        if projection < 0.0 {
-            continue; // Dietro la camera
+            info!("Selezionato: {:?}", entity);
         }
-        
-        let closest_point = ray.origin + *ray.direction * projection;
-        let distance_to_ray = (entity_pos - closest_point).length();
-        
-        // Usa un raggio di picking (es. 0.5 unità)
-        let pick_radius = 1.0;
-        
-        if distance_to_ray < pick_radius && projection < closest_distance {
-            closest_distance = projection;
-            closest_entity = Some(entity);
-        }
-    }
-
-    // Seleziona l'entità trovata
-    if let Some(entity) = closest_entity {
-        // Rimuovi selezione precedente
-        for sel in selected_query.iter() {
-            commands.entity(sel).remove::<Selected>();
-        }
-
-        // Seleziona nuovo
-        commands.entity(entity).insert(Selected);
-        gizmo_state.selected_entity = Some(entity);
-
-        info!("Selezionato: {:?}", entity);
     }
 }
 
@@ -174,7 +101,7 @@ fn handle_transform(
         return;
     }
 
-    let Ok(mut transform) = selected_query.get_single_mut() else {
+    let Ok(mut transform) = selected_query.single_mut() else {
         return;
     };
 
@@ -247,7 +174,7 @@ fn handle_duplication(
             let mut new_transform = *transform;
             new_transform.translation.x += 2.0;
 
-            let mut entity_commands = commands.spawn((new_transform, Pickable));
+            let mut entity_commands = commands.spawn((new_transform, Pickable::default(), RapierPickable));
 
             if let Some(mesh) = mesh {
                 entity_commands.insert(Mesh3d(mesh.0.clone()));
@@ -269,7 +196,7 @@ fn handle_deletion(
 ) {
     if keyboard.just_pressed(KeyCode::Delete) || keyboard.just_pressed(KeyCode::KeyX) {
         for entity in selected_query.iter() {
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
             info!("Eliminato: {:?}", entity);
         }
         gizmo_state.selected_entity = None;
@@ -353,7 +280,7 @@ fn gizmo_controls_ui(
             }
 
             if gizmo_state.selected_entity.is_some() {
-                if let Ok(mut transform) = selected_query.get_single_mut() {
+                if let Ok(mut transform) = selected_query.single_mut() {
                     if ui.collapsing_header("Position", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                         let mut pos = [
                             transform.translation.x,
@@ -363,13 +290,13 @@ fn gizmo_controls_ui(
                         if ui.input_float3("Position", &mut pos).build() {
                             transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
                         }
-                        if ui.slider("PosX", 0.0, 100.0, &mut pos[0]) {
+                        if ui.slider("PosX", -100.0, 100.0, &mut pos[0]) {
                             transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
                         }
-                        if ui.slider("PosY", 0.0, 100.0, &mut pos[1]) {
+                        if ui.slider("PosY", -100.0, 100.0, &mut pos[1]) {
                             transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
                         }
-                        if ui.slider("PosZ", 0.0, 100.0, &mut pos[2]) {
+                        if ui.slider("PosZ", -100.0, 100.0, &mut pos[2]) {
                             transform.translation = Vec3::new(pos[0], pos[1], pos[2]);
                         }
                     }
@@ -513,7 +440,7 @@ fn entity_list_ui(
 
                 let delete_label = format!("X###{:?}", entity);
                 if ui.small_button(&delete_label) {
-                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity).despawn();
                     if gizmo_state.selected_entity == Some(entity) {
                         gizmo_state.selected_entity = None;
                     }
@@ -556,7 +483,8 @@ pub trait PickableExt {
 
 impl PickableExt for EntityCommands<'_> {
     fn with_pickable(mut self) -> Self {
-        self.insert(Pickable);
+        self.insert(Pickable::default());
+        self.insert(RapierPickable);
         self
     }
 }

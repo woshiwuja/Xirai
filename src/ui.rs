@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_mod_imgui::prelude::*;
 
 use crate::pp::PostProcessSettings;
+use bevy::render::camera::{Projection, OrthographicProjection, PerspectiveProjection};
 
 fn shader_editor(
     mut context: NonSendMut<ImguiContext>,
@@ -15,11 +16,11 @@ fn shader_editor(
         .build(|| {
             ui.text("Shader Settings");
 
-            for (camera, mut settings) in query.iter_mut() {
+            for (_camera, mut settings) in query.iter_mut() {
                 if ui.collapsing_header("Basic Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                     ui.slider("Edge Intensity", 0.0, 1.0, &mut settings.edge_intensity);
                     ui.slider("Color Levels", 4.0, 16.0, &mut settings.color_levels);
-                    ui.slider("Cel Shading Levels", 0.0, 1.0, &mut settings.cel_levels);
+                    ui.slider("Cel Shading Levels", 0.0, 100.0, &mut settings.cel_levels);
                     ui.slider("Contrast", 0.5, 10.0, &mut settings.contrast);
                     ui.slider("Saturation", 0.0, 10.0, &mut settings.saturation);
                     ui.slider(
@@ -46,13 +47,13 @@ fn shader_editor(
                 if ui.collapsing_header("Color Palette", imgui::TreeNodeFlags::empty()) {
                     ui.text("Number of colors:");
                     let mut color_count_i32 = settings.color_count as i32;
-                    if ui.slider("Colors", 2, 8, &mut color_count_i32) {
+                    if ui.slider("Colors", 2, 32, &mut color_count_i32) {
                         settings.color_count = color_count_i32 as u32;
                     }
 
                     ui.separator();
 
-                    for i in 0..settings.color_count.min(8) as usize {
+                    for i in 0..settings.color_count.min(32) as usize {
                         let id = format!("color_{}", i);
                         let curr_id = ui.push_id(&id);
                         // Converti Vec4 a array [f32; 4] per imgui
@@ -87,6 +88,18 @@ fn shader_editor(
                     ui.same_line();
                     if ui.button("NES Preset") {
                         apply_nes_preset(&mut settings);
+                    }
+                    ui.separator();
+                    if ui.button("Grayscale 32 Preset") {
+                        apply_grayscale32_preset(&mut settings);
+                    }
+                    ui.same_line();
+                    if ui.button("Vibrant 32 Preset") {
+                        apply_vibrant32_preset(&mut settings);
+                    }
+                    ui.same_line();
+                    if ui.button("Pastel 32 Preset") {
+                        apply_pastel32_preset(&mut settings);
                     }
                     if ui.button("Randomize Palette") {
                         randomize_palette(&mut settings);
@@ -154,32 +167,90 @@ fn light_color_picker(
         });
 }
 
+fn camera_controls_ui(
+    mut context: NonSendMut<ImguiContext>,
+    mut q_projection: Query<&mut Projection, With<Camera3d>>,
+    mut q_retro_sprite: Query<Entity, With<crate::retrocamera::RetroScreen>>,
+    mut commands: Commands,
+    target: Option<Res<crate::retrocamera::RetroRenderTarget>>,
+    windows: Query<&Window>,
+) {
+    let ui = context.ui();
+    let window = ui.window("Camera Controls");
+
+    window
+        .position([620.0, 1000.0], imgui::Condition::FirstUseEver)
+        .size([320.0, 120.0], imgui::Condition::FirstUseEver)
+        .build(|| {
+            // Toggle retrocamera overlay
+            if ui.button("Toggle RetroCamera") {
+                if let Ok(entity) = q_retro_sprite.single() {
+                    commands.entity(entity).despawn();
+                } else {
+                    if let (Some(t), Ok(window)) = (target.as_ref(), windows.single()) {
+                        if let Some(handle) = t.handle.clone() {
+                            let wsize = Vec2::new(window.width() as f32, window.height() as f32);
+                            let tsize = Vec2::new(t.width as f32, t.height as f32);
+                            let scale = (wsize.x / tsize.x).max(wsize.y / tsize.y);
+                            commands.spawn((
+                                Sprite { image: handle, ..Default::default() },
+                                Transform::from_scale(Vec3::new(scale, scale, 1.0)),
+                                crate::retrocamera::RetroScreen,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            ui.same_line();
+
+            if ui.button("Toggle Ortho/Perspective") {
+                if let Ok(mut proj) = q_projection.single_mut() {
+                    let new_proj = match &*proj {
+                        Projection::Perspective(_) => Projection::Orthographic(OrthographicProjection::default_3d()),
+                        Projection::Orthographic(_) => Projection::Perspective(PerspectiveProjection::default()),
+                        _ => return,
+                    };
+                    *proj = new_proj;
+                }
+            }
+        });
+}
+
 // Funzioni helper per i preset della palette
 fn apply_grayscale_preset(settings: &mut PostProcessSettings) {
     settings.color_count = 8;
     settings.palette = [
-        Vec4::new(0.0, 0.0, 0.0, 1.0),    // nero
-        Vec4::new(0.14, 0.14, 0.14, 1.0), // grigio molto scuro
-        Vec4::new(0.29, 0.29, 0.29, 1.0), // grigio scuro
-        Vec4::new(0.43, 0.43, 0.43, 1.0), // grigio medio-scuro
-        Vec4::new(0.57, 0.57, 0.57, 1.0), // grigio medio
-        Vec4::new(0.71, 0.71, 0.71, 1.0), // grigio chiaro
-        Vec4::new(0.86, 0.86, 0.86, 1.0), // grigio molto chiaro
-        Vec4::new(1.0, 1.0, 1.0, 1.0),    // bianco
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+        Vec4::new(0.14, 0.14, 0.14, 1.0),
+        Vec4::new(0.29, 0.29, 0.29, 1.0),
+        Vec4::new(0.43, 0.43, 0.43, 1.0),
+        Vec4::new(0.57, 0.57, 0.57, 1.0),
+        Vec4::new(0.71, 0.71, 0.71, 1.0),
+        Vec4::new(0.86, 0.86, 0.86, 1.0),
+        Vec4::new(1.0, 1.0, 1.0, 1.0),
+        // pad to 32
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
     ];
 }
 
 fn apply_retro_preset(settings: &mut PostProcessSettings) {
     settings.color_count = 8;
     settings.palette = [
-        Vec4::new(0.09, 0.05, 0.11, 1.0), // quasi nero viola
-        Vec4::new(0.8, 0.2, 0.2, 1.0),    // rosso
-        Vec4::new(1.0, 0.6, 0.3, 1.0),    // arancione
-        Vec4::new(1.0, 0.9, 0.3, 1.0),    // giallo
-        Vec4::new(0.3, 0.7, 0.2, 1.0),    // verde
-        Vec4::new(0.3, 0.5, 0.9, 1.0),    // blu
-        Vec4::new(0.9, 0.3, 0.6, 1.0),    // rosa
-        Vec4::new(1.0, 1.0, 1.0, 1.0),    // bianco
+        Vec4::new(0.09, 0.05, 0.11, 1.0),
+        Vec4::new(0.8, 0.2, 0.2, 1.0),
+        Vec4::new(1.0, 0.6, 0.3, 1.0),
+        Vec4::new(1.0, 0.9, 0.3, 1.0),
+        Vec4::new(0.3, 0.7, 0.2, 1.0),
+        Vec4::new(0.3, 0.5, 0.9, 1.0),
+        Vec4::new(0.9, 0.3, 0.6, 1.0),
+        Vec4::new(1.0, 1.0, 1.0, 1.0),
+        // pad to 32
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
     ];
 }
 
@@ -190,32 +261,111 @@ fn apply_gameboy_preset(settings: &mut PostProcessSettings) {
         Vec4::new(0.19, 0.38, 0.19, 1.0),
         Vec4::new(0.55, 0.68, 0.06, 1.0),
         Vec4::new(0.61, 0.74, 0.06, 1.0),
-        Vec4::ZERO,
-        Vec4::ZERO,
-        Vec4::ZERO,
-        Vec4::ZERO,
+        // pad to 32
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
     ];
 }
 
 fn apply_nes_preset(settings: &mut PostProcessSettings) {
     settings.color_count = 8;
     settings.palette = [
-        Vec4::new(0.0, 0.0, 0.0, 1.0), // nero
-        Vec4::new(0.9, 0.1, 0.1, 1.0), // rosso
-        Vec4::new(1.0, 0.5, 0.0, 1.0), // arancione
-        Vec4::new(1.0, 1.0, 0.0, 1.0), // giallo
-        Vec4::new(0.0, 0.8, 0.0, 1.0), // verde
-        Vec4::new(0.0, 0.5, 1.0, 1.0), // blu
-        Vec4::new(0.6, 0.2, 0.8, 1.0), // viola
-        Vec4::new(1.0, 1.0, 1.0, 1.0), // bianco
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+        Vec4::new(0.9, 0.1, 0.1, 1.0),
+        Vec4::new(1.0, 0.5, 0.0, 1.0),
+        Vec4::new(1.0, 1.0, 0.0, 1.0),
+        Vec4::new(0.0, 0.8, 0.0, 1.0),
+        Vec4::new(0.0, 0.5, 1.0, 1.0),
+        Vec4::new(0.6, 0.2, 0.8, 1.0),
+        Vec4::new(1.0, 1.0, 1.0, 1.0),
+        // pad to 32
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
+        Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO,
     ];
+}
+
+// =============================
+// 32-COLOR PRESETS
+// =============================
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Vec3 {
+    let c = v * s;
+    let h6 = (h * 6.0).fract();
+    let x = c * (1.0 - ((h6 * 2.0 - 1.0).abs()));
+
+    let (r1, g1, b1) = if h6 < 1.0 {
+        (c, x, 0.0)
+    } else if h6 < 2.0 {
+        (x, c, 0.0)
+    } else if h6 < 3.0 {
+        (0.0, c, x)
+    } else if h6 < 4.0 {
+        (0.0, x, c)
+    } else if h6 < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    let m = v - c;
+    Vec3::new(r1 + m, g1 + m, b1 + m)
+}
+
+fn apply_grayscale32_preset(settings: &mut PostProcessSettings) {
+    settings.color_count = 32;
+    let mut pal = [Vec4::ZERO; 32];
+    for i in 0..32 {
+        let t = i as f32 / 31.0;
+        pal[i] = Vec4::new(t, t, t, 1.0);
+    }
+    settings.palette = pal;
+}
+
+fn apply_vibrant32_preset(settings: &mut PostProcessSettings) {
+    settings.color_count = 32;
+    let mut pal = [Vec4::ZERO; 32];
+    // 8 hues * 4 values (bright to dark)
+    for h_idx in 0..8 {
+        let h = h_idx as f32 / 8.0; // 0..1
+        for v_idx in 0..4 {
+            let idx = h_idx * 4 + v_idx;
+            let v = match v_idx { 0 => 1.0, 1 => 0.8, 2 => 0.6, _ => 0.4 };
+            let s = 0.95;
+            let rgb = hsv_to_rgb(h, s, v);
+            pal[idx] = Vec4::new(rgb.x, rgb.y, rgb.z, 1.0);
+        }
+    }
+    settings.palette = pal;
+}
+
+fn apply_pastel32_preset(settings: &mut PostProcessSettings) {
+    settings.color_count = 32;
+    let mut pal = [Vec4::ZERO; 32];
+    // 8 hues * 4 pastels (lower saturation, higher value)
+    for h_idx in 0..8 {
+        let h = h_idx as f32 / 8.0;
+        for v_idx in 0..4 {
+            let idx = h_idx * 4 + v_idx;
+            let s = 0.35 + (v_idx as f32) * 0.05; // 0.35..0.5
+            let v = 0.85 + (v_idx as f32) * 0.05; // 0.85..1.0
+            let rgb = hsv_to_rgb(h, s.min(0.6), v.min(1.0));
+            pal[idx] = Vec4::new(rgb.x, rgb.y, rgb.z, 1.0);
+        }
+    }
+    settings.palette = pal;
 }
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (shader_editor, light_color_picker))
+        app.add_systems(Update, (shader_editor, light_color_picker, camera_controls_ui))
         ;
     }
 }
@@ -223,7 +373,7 @@ fn randomize_palette(settings: &mut PostProcessSettings) {
     use rand::Rng;
     let mut rng = rand::rng();
 
-    for i in 0..settings.color_count.min(8) as usize {
+    for i in 0..settings.color_count.min(32) as usize {
         settings.palette[i] = Vec4::new(
             rng.random_range(0.0..1.0), // R
             rng.random_range(0.0..1.0), // G

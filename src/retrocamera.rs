@@ -73,6 +73,9 @@ fn attach_retro_cameras(
     }
 }
 
+#[derive(Component)]
+pub struct RetroScreen;
+
 /// Sets up a fullscreen quad that displays the retro texture
 fn setup_fullscreen_quad_sprite(
     mut commands: Commands,
@@ -92,7 +95,9 @@ fn setup_fullscreen_quad_sprite(
         image: retro_texture_handle,
         ..default()
     },
-    Transform::from_scale(Vec3::new(scale,scale,1.0)))
+    Transform::from_scale(Vec3::new(scale,scale,1.0)),
+    RetroScreen,
+    )
 );
 
     // Simple 2D camera without explicit transform
