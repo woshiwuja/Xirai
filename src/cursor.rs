@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_mod_outline::OutlineVolume;
+use bevy_mod_outline::{OutlineMode, OutlineVolume};
 #[derive(Resource)]
 pub struct Cursor {
    pub cursor_position: Vec3,
@@ -112,7 +112,7 @@ fn draw_cursor(
             CursorToroid,
             OutlineVolume {
                 visible: true,
-                width: 2.0,
+                width: 4.0,
                 colour: Color::BLACK.into(),
             },
         ));

@@ -3,10 +3,9 @@ use bevy::{
     render::{
         camera::RenderTarget,
         render_asset::RenderAssetUsages,
-        render_resource::{
-            Extent3d, TextureDimension, TextureFormat, TextureUsages,
-        },
-    }, window::WindowResized,
+        render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
+    },
+    window::WindowResized,
 };
 
 /// Marker for cameras that should render to a low-res texture
@@ -18,6 +17,14 @@ pub struct RetroRenderPlugin {
     pub width: u32,
     pub height: u32,
 }
+impl Default for RetroRenderPlugin {
+    fn default() -> Self {
+        RetroRenderPlugin {
+            width: 320,
+            height: 180,
+        }
+    }
+}
 
 impl Plugin for RetroRenderPlugin {
     fn build(&self, app: &mut App) {
@@ -27,16 +34,19 @@ impl Plugin for RetroRenderPlugin {
             handle: None,
         })
         .add_systems(Startup, setup_retro_target)
-        .add_systems(PostStartup, (attach_retro_cameras, setup_fullscreen_quad_sprite).chain())
+        .add_systems(
+            PostStartup,
+            (attach_retro_cameras, setup_fullscreen_quad_sprite).chain(),
+        )
         .add_systems(Update, update_fullscreen_quad_scale);
     }
 }
 
 #[derive(Resource)]
 pub struct RetroRenderTarget {
-   pub width: u32,
-   pub height: u32,
-   pub handle: Option<Handle<Image>>,
+    pub width: u32,
+    pub height: u32,
+    pub handle: Option<Handle<Image>>,
 }
 
 fn setup_retro_target(mut images: ResMut<Assets<Image>>, mut target: ResMut<RetroRenderTarget>) {
@@ -53,7 +63,6 @@ fn setup_retro_target(mut images: ResMut<Assets<Image>>, mut target: ResMut<Retr
         TextureFormat::Bgra8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
-    
     image.sampler = bevy_image::ImageSampler::nearest();
     image.texture_descriptor.usage =
         TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
@@ -89,25 +98,24 @@ fn setup_fullscreen_quad_sprite(
     let window = windows.single().expect("No primary window");
     let wsize = Vec2::new(window.width() as f32, window.height() as f32);
     let tsize = Vec2::new(target.width as f32, target.height as f32);
-    let scale = (wsize.x / tsize.x).max(wsize.y/tsize.y);
+    let scale = (wsize.x / tsize.x).max(wsize.y / tsize.y);
     // Use SpriteBundle - much simpler
-    commands.spawn((Sprite {
-        image: retro_texture_handle,
-        ..default()
-    },
-    Transform::from_scale(Vec3::new(scale,scale,1.0)),
-    RetroScreen,
-    )
-);
+    commands.spawn((
+        Sprite {
+            image: retro_texture_handle,
+            ..default()
+        },
+        Transform::from_scale(Vec3::new(scale, scale, 1.0)),
+        RetroScreen,
+    ));
 
     // Simple 2D camera without explicit transform
-    commands.spawn(
-        (
-            Camera2d,
-            Camera{
-                order: 1, // Render after retro cameras
-                ..Default::default()
-            },
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1, // Render after retro cameras
+            ..Default::default()
+        },
     ));
 }
 // Aggiungi questo sistema per reagire ai cambi di dimensione della finestra
@@ -122,14 +130,14 @@ fn update_fullscreen_quad_scale(
         let Ok(window) = windows.single() else {
             return;
         };
-        
+
         let window_size = Vec2::new(window.width(), window.height());
         let texture_size = Vec2::new(target.width as f32, target.height as f32);
-        
+
         let scale_x = window_size.x / texture_size.x;
         let scale_y = window_size.y / texture_size.y;
         let scale = scale_x.max(scale_y);
-        
+
         // Aggiorna la scala dello sprite
         for mut transform in sprite_query.iter_mut() {
             transform.scale = Vec3::new(scale, scale, 1.0);
