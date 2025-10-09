@@ -20,9 +20,9 @@ fn shader_editor(
                 if ui.collapsing_header("Basic Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                     ui.slider("Edge Intensity", 0.0, 1.0, &mut settings.edge_intensity);
                     ui.slider("Color Levels", 4.0, 16.0, &mut settings.color_levels);
-                    ui.slider("Cel Shading Levels", 0.0, 100.0, &mut settings.cel_levels);
-                    ui.slider("Contrast", 0.5, 10.0, &mut settings.contrast);
-                    ui.slider("Saturation", 0.0, 10.0, &mut settings.saturation);
+                    ui.slider("Cel Shading Levels", 0.0, 10.0, &mut settings.cel_levels);
+                    ui.slider("Contrast", 1.0, 10.0, &mut settings.contrast);
+                    ui.slider("Saturation", 1.0, 10.0, &mut settings.saturation);
                     ui.slider(
                         "Scanline Intensity",
                         0.0,
@@ -147,6 +147,25 @@ fn light_color_picker(
 
             // Preset comuni
             ui.separator();
+
+            let mut shadow_depth_bias= light.shadow_depth_bias;
+            if ui.slider("Shadow Depth Bias", 0.0, 0.1, &mut shadow_depth_bias) {
+                light.shadow_depth_bias = shadow_depth_bias;
+            }
+
+            // Preset comuni
+            ui.separator();
+
+            let mut shadow_normal_bias= light.shadow_normal_bias;
+            if ui.slider("Shadow normal Bias", 0.0, 10.0, &mut shadow_normal_bias) {
+                light.shadow_normal_bias = shadow_normal_bias;
+            }
+
+            let mut shadows_enabled = light.shadows_enabled;
+            if ui.checkbox("Shadows Enabled",&mut shadows_enabled) {
+                light.shadows_enabled = shadows_enabled;
+            }
+
             ui.text("Presets:");
 
             if ui.button("Warm White") {

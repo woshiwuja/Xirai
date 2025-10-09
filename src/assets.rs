@@ -271,8 +271,12 @@ pub fn spawn_asset(
                         width: 2.0,
                         colour: BLACK.into(),
                     },
-                    OutlineMode::ExtrudeFlatDoubleSided,
+                    OutlineMode::ExtrudeReal,
                     Alive,
+                    bevy::picking::Pickable{
+                        should_block_lower:false,
+                        is_hoverable:true
+                    },
                     //crate::transform::Selected
                 ))
                 .id();

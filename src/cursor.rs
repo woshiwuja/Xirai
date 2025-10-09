@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{pbr::{NotShadowCaster, NotShadowReceiver}, prelude::*};
 use bevy_mod_outline::{OutlineMode, OutlineVolume};
 #[derive(Resource)]
 pub struct Cursor {
@@ -115,6 +115,8 @@ fn draw_cursor(
                 width: 4.0,
                 colour: Color::BLACK.into(),
             },
+            NotShadowCaster,
+            NotShadowReceiver,
         ));
     }
 

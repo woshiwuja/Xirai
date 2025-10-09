@@ -156,12 +156,14 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var final_color = nearest_color(lum);
 
 // 7. Cel shading (quantizzazione della luce)
-if (settings.cel_levels >= 1.0) {
+if (settings.cel_levels > 1.0) {
     let cel_steps = max(settings.cel_levels, 1.0);
     let cel_lum = floor(lum * cel_steps) / cel_steps;
 
-    // Applica la quantizzazione alla luminanza ma mantieni il colore originale
-    final_color = saturated_color * (cel_lum / max(lum, 0.0001));
+    // Calcola la luminanza attuale del colore di palette
+    let lum_final = dot(final_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    // Modula solo l’intensità, senza cambiare la tinta
+    final_color *= cel_lum / max(lum_final, 0.0001);
 }
 
     // 8. Color snap

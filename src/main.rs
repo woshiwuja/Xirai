@@ -83,12 +83,9 @@ fn setup(
         TextureFormat::Bgra8UnormSrgb,
         RenderAssetUsages::default(),
     );
-    // Abilitiamo l'uso come render target:
     image.texture_descriptor.usage =
         TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
-    // Filtro nearest-neighbor per mantenere il pixelato:
-    image.sampler = ImageSampler::nearest(); // filtro mag/min = Nearest:contentReference[oaicite:3]{index=3}
-                                             //let texture_handle = asset_server.load("textures/grass_ground.png");
+    image.sampler = ImageSampler::linear(); // filtro mag/min = Nearest:contentReference[oaicite:3]{index=3}
     let mut mesh = Mesh::from(Plane3d::default().mesh().size(1000.0, 1000.0));
     let repeat_factor = 50.0;
     if let Some(uvs) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
@@ -117,7 +114,7 @@ fn setup(
         DirectionalLight {
             shadows_enabled: true,
             color: WHITE.into(),
-            illuminance: 2000.0,
+            illuminance: 20000.0,
             shadow_depth_bias: 0.0005,
             shadow_normal_bias: 0.05,
             ..default()
@@ -128,6 +125,7 @@ fn setup(
             ..Default::default()
         },
         CascadeShadowConfigBuilder { ..default() }.build(),
+        Pickable::default(),
     ));
 }
 

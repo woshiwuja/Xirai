@@ -26,7 +26,7 @@ fn setup_board(
         ))
         .id();
 
-    let tile_size = 1.5; // Dimensione di ogni tile
+    let tile_size = 2.0; // Dimensione di ogni tile
     let board_width = 8; // Numero di tile in larghezza
     let board_height = 8; // Numero di tile in altezza
     let mut square_material = StandardMaterial {
@@ -35,6 +35,7 @@ fn setup_board(
         unlit: true, // Flat pixel art look
         metallic: 0.0,
         perceptual_roughness: 1.0,
+        //emissive: LinearRgba::rgb(1.0,1.0,1.0),
         reflectance: 0.0,
         ..default()
     };

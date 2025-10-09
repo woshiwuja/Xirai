@@ -1,0 +1,12 @@
+# assets/dialogue/main.yarn
+title: Start
+---
+Hello World!
+Wow! My first ever Yarn script in Rust!
+
+-> Gosh!
+-> Incredible!
+-> I'm amazed!
+
+Anyway, time to get writing!
+===

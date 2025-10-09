@@ -22,11 +22,11 @@ fn spawn_character(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     println!("spawning character");
-    const ANIMATION_PATH: &str = "female.glb";
+    const ANIMATION_PATH: &str = "samurai.glb";
     let clip_handle: Handle<AnimationClip> =
         asset_server.load(GltfAssetLabel::Animation(0).from_asset(ANIMATION_PATH));
     let (graph, index) = AnimationGraph::from_clip(clip_handle);
-    const PATH: &str = "female.glb";
+    const PATH: &str = "samurai.glb";
     // 1️⃣ Spawn scena GLTF
     let mut scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(PATH));
 
@@ -54,6 +54,7 @@ fn spawn_character(
                 width: 2.0,
                 colour: BLACK.into(),
             },
+            OutlineMode::ExtrudeReal,
         ))
         .with_children(|children| {
             children.spawn((

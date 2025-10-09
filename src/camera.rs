@@ -1,6 +1,4 @@
 use bevy::prelude::*;
-
-// Bundle to spawn our custom camera easily
 #[derive(Bundle, Default)]
 pub struct PanOrbitCameraBundle {
     pub camera_3d: Camera3d,
@@ -20,7 +18,6 @@ pub struct PanOrbitState {
     pub yaw: f32,
 }
 
-/// The configuration of the pan-orbit controller
 #[derive(Component)]
 pub struct PanOrbitSettings {
     /// World units per pixel of mouse motion
@@ -87,15 +84,18 @@ pub fn spawn_camera(mut commands: Commands) {
                 yaw: 30.0f32.to_radians(),
                 ..default()
             },
-            camera: Camera { hdr:true, ..default() },
+            camera: Camera {
+                hdr: true,
+                ..default()
+            },
             ..default()
         },
         crate::retrocamera::RetroCamera,
         crate::pp::PostProcessSettings {
             edge_denoise: 0.0,
-            edge_intensity: 0.5, // Intensità dei bordi (0.0-1.0)
-            color_levels: 8.0,   // Non usato in grayscale, ma mantenuto per compatibilità
-            cel_levels: 0.0,     // 0 = usa palette, >1 = cel shading (es. 3.0 per 3 livelli)
+            edge_intensity: 0.5,     // Intensità dei bordi (0.0-1.0)
+            color_levels: 8.0,       // Non usato in grayscale, ma mantenuto per compatibilità
+            cel_levels: 0.0,         // 0 = usa palette, >1 = cel shading (es. 3.0 per 3 livelli)
             contrast: 1.2,           // Contrasto (1.0 = normale, >1.0 = più contrasto)
             saturation: 0.0,         // Non usato in grayscale
             scanline_intensity: 0.3, // Effetto scanlines CRT (0.0-1.0)
@@ -113,6 +113,9 @@ pub fn spawn_camera(mut commands: Commands) {
             color_count: 8,
         },
         MeshPickingCamera,
+        Pickable::default(),
+        //Bloom::NATURAL,
+        //Tonemapping::TonyMcMapface,
     ));
 }
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
