@@ -23,9 +23,8 @@ use bevy::remote::RemotePlugin;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::scene;
-use bevy::scene::SceneInstanceReady;
 use bevy_mod_outline::{
-    AsyncSceneInheritOutline, AutoGenerateOutlineNormalsPlugin, OutlinePlugin, OutlineVolume,
+    AutoGenerateOutlineNormalsPlugin, OutlinePlugin,
 };
 use bevy_rapier3d::prelude::*;
 use std::f32::consts::PI;
@@ -39,10 +38,10 @@ fn main() {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         //.add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(bevy_mod_imgui::ImguiPlugin::default())
-        //.add_plugins(retrocamera::RetroRenderPlugin {
-        //    width: 320,
-        //    height: 180,
-        //})
+        .add_plugins(retrocamera::RetroRenderPlugin {
+            width: 320,
+            height: 180,
+        })
         .add_plugins(cursor::CursorPluginRetro)
         .add_plugins(outline::OutlinePlugin)
         .add_systems(Startup, setup)

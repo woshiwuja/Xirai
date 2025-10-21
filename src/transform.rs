@@ -27,10 +27,6 @@ pub enum TransformMode {
     Scale,
 }
 
-// ============================================================================
-// PICKING & SELECTION SYSTEMS (Bevy 0.16 integrated picking)
-// ============================================================================
-
 fn handle_selection(
     mut commands: Commands,
     mut gizmo_state: ResMut<TransformGizmoState>,
@@ -40,18 +36,12 @@ fn handle_selection(
 ) {
     for click in click_events.read() {
         let entity = click.target;
-
-        // Se il target è pickable
         if pickable_query.get(entity).is_ok() {
-            // Rimuovi selezione precedente
             for sel in selected_query.iter() {
                 commands.entity(sel).remove::<Selected>();
             }
-
-            // Seleziona nuovo
             commands.entity(entity).insert(Selected);
             gizmo_state.selected_entity = Some(entity);
-
             info!("Selezionato: {:?}", entity);
         }
     }
@@ -72,9 +62,6 @@ fn handle_deselection(
     }
 }
 
-// ============================================================================
-// TRANSFORM SYSTEMS
-// ============================================================================
 
 fn handle_transform(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -83,7 +70,6 @@ fn handle_transform(
     windows: Query<&Window>,
     mut selected_query: Query<&mut Transform, With<Selected>>,
 ) {
-    // Cambio modalità con i tasti
     if keyboard.just_pressed(KeyCode::KeyG) {
         gizmo_state.mode = TransformMode::Translate;
         info!("Modalità: Translate");
@@ -105,11 +91,9 @@ fn handle_transform(
         return;
     };
 
-    // Inizia drag
     if mouse_button.just_pressed(MouseButton::Right) {
         gizmo_state.is_dragging = true;
         gizmo_state.initial_transform = *transform;
-
         if let Ok(window) = windows.single() {
             if let Some(cursor_pos) = window.cursor_position() {
                 gizmo_state.drag_start_pos = cursor_pos;
@@ -117,17 +101,14 @@ fn handle_transform(
         }
     }
 
-    // Termina drag
     if mouse_button.just_released(MouseButton::Right) {
         gizmo_state.is_dragging = false;
     }
 
-    // Applica trasformazione durante drag
     if gizmo_state.is_dragging {
         if let Ok(window) = windows.single() {
             if let Some(cursor_pos) = window.cursor_position() {
                 let delta = cursor_pos - gizmo_state.drag_start_pos;
-
                 match gizmo_state.mode {
                     TransformMode::Translate => {
                         let speed = 0.01;
@@ -166,15 +147,15 @@ fn handle_duplication(
             Option<&Mesh3d>,
             Option<&MeshMaterial3d<StandardMaterial>>,
         ),
-        With<Selected>,
-    >,
+        With<Selected>>
 ) {
     if keyboard.pressed(KeyCode::ShiftLeft) && keyboard.just_pressed(KeyCode::KeyD) {
         for (entity, transform, mesh, material) in selected_query.iter() {
             let mut new_transform = *transform;
             new_transform.translation.x += 2.0;
 
-            let mut entity_commands = commands.spawn((new_transform, Pickable::default(), RapierPickable));
+            let mut entity_commands =
+                commands.spawn((new_transform, Pickable::default(), RapierPickable));
 
             if let Some(mesh) = mesh {
                 entity_commands.insert(Mesh3d(mesh.0.clone()));
@@ -213,7 +194,6 @@ fn draw_selection_outline(
 ) {
     for global_transform in selected_query.iter() {
         let pos = global_transform.translation();
-
         gizmos.cuboid(
             Transform::from_translation(pos).with_scale(Vec3::splat(1.1)),
             Color::srgb(1.0, 1.0, 0.0),
@@ -249,7 +229,6 @@ fn gizmo_controls_ui(
 ) {
     let ui = context.ui();
     let window = ui.window("Transform Gizmo");
-
     window
         .position([900.0, 300.0], imgui::Condition::FirstUseEver)
         .size([320.0, 500.0], imgui::Condition::FirstUseEver)
@@ -267,7 +246,6 @@ fn gizmo_controls_ui(
 
             if ui.collapsing_header("Transform Mode", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                 let mut current_mode = gizmo_state.mode;
-
                 if ui.radio_button("Translate (G)", &mut current_mode, TransformMode::Translate) {
                     gizmo_state.mode = TransformMode::Translate;
                 }
@@ -306,9 +284,14 @@ fn gizmo_controls_ui(
                         x = x.to_degrees();
                         y = y.to_degrees();
                         z = z.to_degrees();
-
                         let mut euler = [x, y, z];
+
+                        // Input fields
                         if ui.input_float3("Rotation (deg)", &mut euler).build() {
+                            // Normalizza gli angoli nel range [-180, 180]
+                            for angle in &mut euler {
+                                *angle = (*angle + 180.0).rem_euclid(360.0) - 180.0;
+                            }
                             transform.rotation = Quat::from_euler(
                                 EulerRot::XYZ,
                                 euler[0].to_radians(),
@@ -316,6 +299,8 @@ fn gizmo_controls_ui(
                                 euler[2].to_radians(),
                             );
                         }
+
+                        // Sliders individuali
                         if ui.slider("RotX", -180.0, 180.0, &mut euler[0]) {
                             transform.rotation = Quat::from_euler(
                                 EulerRot::XYZ,
@@ -324,7 +309,7 @@ fn gizmo_controls_ui(
                                 euler[2].to_radians(),
                             );
                         }
-                        if ui.slider("RotY", -180.0, 180.0, &mut euler[1]) {
+                        if ui.slider("RotY", -90.0, 90.0, &mut euler[1]) {
                             transform.rotation = Quat::from_euler(
                                 EulerRot::XYZ,
                                 euler[0].to_radians(),
@@ -340,6 +325,85 @@ fn gizmo_controls_ui(
                                 euler[2].to_radians(),
                             );
                         }
+
+                        ui.separator();
+
+                        // Bottoni Flip
+                        ui.text("Flip Axes:");
+                        ui.same_line();
+                        if ui.button("Flip X") {
+                            euler[0] = (euler[0] + 180.0).rem_euclid(360.0) - 180.0;
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                        ui.same_line();
+                        if ui.button("Flip Y") {
+                            euler[1] = (euler[1] + 180.0).rem_euclid(360.0) - 180.0;
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+                        ui.same_line();
+                        if ui.button("Flip Z") {
+                            euler[2] = (euler[2] + 180.0).rem_euclid(360.0) - 180.0;
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler[0].to_radians(),
+                                euler[1].to_radians(),
+                                euler[2].to_radians(),
+                            );
+                        }
+
+                        ui.separator();
+
+                        // Bottoni Preset
+                        ui.text("Rotation Presets:");
+                        if ui.button("Reset##rot") {
+                            transform.rotation = Quat::IDENTITY;
+                        }
+                        ui.same_line();
+                        if ui.button("90° X") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 90.0_f32.to_radians(), 0.0, 0.0);
+                        }
+                        ui.same_line();
+                        if ui.button("90° Y") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 0.0, 90.0_f32.to_radians(), 0.0);
+                        }
+                        ui.same_line();
+                        if ui.button("90° Z") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 0.0, 0.0, 90.0_f32.to_radians());
+                        }
+
+                        // Seconda riga di preset
+                        if ui.button("180° X") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 180.0_f32.to_radians(), 0.0, 0.0);
+                        }
+                        ui.same_line();
+                        if ui.button("180° Y") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 0.0, 180.0_f32.to_radians(), 0.0);
+                        }
+                        ui.same_line();
+                        if ui.button("180° Z") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, 0.0, 0.0, 180.0_f32.to_radians());
+                        }
+                        ui.same_line();
+                        if ui.button("-90° X") {
+                            transform.rotation =
+                                Quat::from_euler(EulerRot::XYZ, -90.0_f32.to_radians(), 0.0, 0.0);
+                        }
                     }
 
                     if ui.collapsing_header("Scale", imgui::TreeNodeFlags::empty()) {
@@ -347,7 +411,6 @@ fn gizmo_controls_ui(
                         if ui.input_float3("Scale", &mut scale).build() {
                             transform.scale = Vec3::new(scale[0], scale[1], scale[2]);
                         }
-
                         let mut uniform_scale = transform.scale.x;
                         if ui.slider("Uniform Scale", 0.1, 5.0, &mut uniform_scale) {
                             transform.scale = Vec3::splat(uniform_scale);
@@ -363,7 +426,6 @@ fn gizmo_controls_ui(
                     if ui.button("Reset Rotation") {
                         transform.rotation = Quat::IDENTITY;
                     }
-
                     if ui.button("Reset Scale") {
                         transform.scale = Vec3::ONE;
                     }
@@ -398,7 +460,6 @@ fn entity_list_ui(
 ) {
     let ui = context.ui();
     let window = ui.window("Entity List");
-
     window
         .position([10.0, 810.0], imgui::Condition::FirstUseEver)
         .size([320.0, 250.0], imgui::Condition::FirstUseEver)
@@ -411,7 +472,6 @@ fn entity_list_ui(
 
             for (entity, name, transform) in pickable_query.iter() {
                 let is_selected = selected_query.contains(entity);
-
                 let label = if let Some(name) = name {
                     format!("{} ({:?})", name.as_str(), entity)
                 } else {
@@ -425,19 +485,16 @@ fn entity_list_ui(
                 }
 
                 ui.same_line();
-
                 let select_label = format!("Select###{:?}", entity);
                 if ui.small_button(&select_label) {
                     for selected in selected_query.iter() {
                         commands.entity(selected).remove::<Selected>();
                     }
-
                     commands.entity(entity).insert(Selected);
                     gizmo_state.selected_entity = Some(entity);
                 }
 
                 ui.same_line();
-
                 let delete_label = format!("X###{:?}", entity);
                 if ui.small_button(&delete_label) {
                     commands.entity(entity).despawn();
@@ -454,11 +511,8 @@ fn entity_list_ui(
         });
 }
 
-// ============================================================================
-// PLUGIN
-// ============================================================================
-
 pub struct TransformGizmoPlugin;
+
 impl Plugin for TransformGizmoPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TransformGizmoState>()
@@ -473,9 +527,6 @@ impl Plugin for TransformGizmoPlugin {
     }
 }
 
-// ============================================================================
-// HELPER TRAIT
-// ============================================================================
 
 pub trait PickableExt {
     fn with_pickable(self) -> Self;

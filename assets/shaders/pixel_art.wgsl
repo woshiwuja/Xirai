@@ -29,9 +29,11 @@ struct PostProcessSettings {
     // palette
     palette: array<vec4<f32>, 32>,
 
-    // ultimo gruppo
+    // ultimo gruppo:
+    // x = color_count
+    // y = palette_enabled (1 = ON, 0 = OFF)
     color_count_and_pad: vec4<u32>,
-}
+};
 
 @group(0) @binding(2) var<uniform> settings: PostProcessSettings;
 
@@ -129,17 +131,17 @@ fn apply_scanlines(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
-    let color = textureSample(screen_texture, texture_sampler, uv).rgb;
+    let orig_color = textureSample(screen_texture, texture_sampler, uv).rgb;
 
     // 1. Contrasto
-    var contrasted_color = (color - vec3<f32>(0.5)) * settings.contrast + vec3<f32>(0.5);
+    var contrasted_color = (orig_color - vec3<f32>(0.5)) * settings.contrast + vec3<f32>(0.5);
     contrasted_color = clamp(contrasted_color, vec3<f32>(0.0), vec3<f32>(1.0));
 
     // 2. Saturazione
     let gray = dot(contrasted_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     var saturated_color = mix(vec3<f32>(gray), contrasted_color, settings.saturation);
 
-    // 3. Luminanza dal colore corretto
+    // 3. Luminanza
     var lum = dot(saturated_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     lum = clamp(lum, 0.0, 1.0);
 
@@ -153,22 +155,27 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     lum = ordered_dither(uv, lum);
 
     // 6. Quantizzazione / palette
-    var final_color = nearest_color(lum);
+    var final_color: vec3<f32>;
+    if settings.color_count_and_pad.y == 1u {
+        // Palette attiva
+        final_color = nearest_color(lum);
+    } else {
+        // Palette disattivata: mantieni il colore originale corretto
+        final_color = saturated_color;
+    }
 
-// 7. Cel shading (quantizzazione della luce)
-if (settings.cel_levels > 1.0) {
-    let cel_steps = max(settings.cel_levels, 1.0);
-    let cel_lum = floor(lum * cel_steps) / cel_steps;
+    // 7. Cel shading
+    if settings.cel_levels > 1.0 {
+        let cel_steps = max(settings.cel_levels, 1.0);
+        let cel_lum = floor(lum * cel_steps) / cel_steps;
 
-    // Calcola la luminanza attuale del colore di palette
-    let lum_final = dot(final_color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    // Modula solo l’intensità, senza cambiare la tinta
-    final_color *= cel_lum / max(lum_final, 0.0001);
-}
+        let lum_final = dot(final_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        final_color *= cel_lum / max(lum_final, 0.0001);
+    }
 
     // 8. Color snap
-    if (settings.color_snap_strength > 0.0) {
-        if (lum > 0.5) {
+    if settings.color_snap_strength > 0.0 {
+        if lum > 0.5 {
             final_color = mix(final_color, vec3<f32>(1.0), settings.color_snap_strength * 0.3);
         } else {
             final_color = mix(final_color, vec3<f32>(0.0), settings.color_snap_strength * 0.3);

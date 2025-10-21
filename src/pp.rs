@@ -215,7 +215,7 @@ pub struct PostProcessSettings {
     pub _pad3: f32,
     
     pub palette: [Vec4; 32],
-    pub color_count: u32,
+    pub color_count_and_pad: UVec4,
 }
 
 impl PostProcessSettings {
@@ -226,6 +226,7 @@ impl PostProcessSettings {
         s._pad3 = 0.0;
         s.window_size = Vec2::new(1920.0, 1080.0);
         s.edge_intensity = 1.0;
+        s.color_count_and_pad = UVec4::new(32, 1, 0, 0); // palette abilitata
         s
     }
 }

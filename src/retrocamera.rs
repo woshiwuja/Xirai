@@ -38,7 +38,9 @@ impl Plugin for RetroRenderPlugin {
             PostStartup,
             (attach_retro_cameras, setup_fullscreen_quad_sprite).chain(),
         )
-        .add_systems(Update, update_fullscreen_quad_scale);
+        .add_systems(Update, update_fullscreen_quad_scale)
+        .add_systems(Update, update_retro_resolution)
+        ;
     }
 }
 
@@ -144,6 +146,64 @@ fn update_fullscreen_quad_scale(
         }
     }
 }
+fn update_retro_resolution(
+    mut images: ResMut<Assets<Image>>,
+    mut target: ResMut<RetroRenderTarget>,
+    mut cameras: Query<&mut Camera, With<RetroCamera>>,
+    mut sprite_query: Query<(&mut Sprite, &mut Transform), With<RetroScreen>>,
+    windows: Query<&Window>,
+) {
+    if !target.is_changed() {
+        return;
+    }
 
+    let Some(old_handle) = target.handle.clone() else {
+        return;
+    };
+
+    // Ricrea la texture
+    let size = Extent3d {
+        width: target.width,
+        height: target.height,
+        depth_or_array_layers: 1,
+    };
+
+    let mut image = Image::new_fill(
+        size,
+        TextureDimension::D2,
+        &[0, 0, 0, 255],
+        TextureFormat::Bgra8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    image.sampler = bevy_image::ImageSampler::nearest();
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING 
+        | TextureUsages::COPY_DST 
+        | TextureUsages::RENDER_ATTACHMENT;
+
+    let new_handle = images.add(image);
+
+    // Aggiorna le camere
+    for mut camera in &mut cameras {
+        camera.target = RenderTarget::Image(new_handle.clone().into());
+    }
+
+    // Aggiorna lo sprite con il nuovo handle E la scala
+    if let Ok((mut sprite, mut transform)) = sprite_query.get_single_mut() {
+        sprite.image = new_handle.clone();
+        
+        if let Ok(window) = windows.get_single() {
+            let window_size = Vec2::new(window.width(), window.height());
+            let texture_size = Vec2::new(target.width as f32, target.height as f32);
+            let scale = (window_size.x / texture_size.x).max(window_size.y / texture_size.y);
+            transform.scale = Vec3::new(scale, scale, 1.0);
+        }
+    }
+
+    // Rimuovi la vecchia texture
+    images.remove(&old_handle);
+
+    target.handle = Some(new_handle);
+}
 #[derive(Resource)]
 pub struct ExtractedRetroTargetHandle(pub Handle<Image>);

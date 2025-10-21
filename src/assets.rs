@@ -271,7 +271,7 @@ pub fn spawn_asset(
                         width: 2.0,
                         colour: BLACK.into(),
                     },
-                    OutlineMode::ExtrudeReal,
+                    OutlineMode::FloodFlatDoubleSided,
                     Alive,
                     bevy::picking::Pickable{
                         should_block_lower:false,
